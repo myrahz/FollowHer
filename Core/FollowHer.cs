@@ -144,7 +144,8 @@ namespace FollowHer
 
 
 
-                var isActive = _isToggled || Input.GetKeyState(Settings.PrecisionKey) || shouldAttack;
+                var isActive = _isToggled || Input.GetKeyState(Settings.PrecisionKey) || shouldAttack ||
+                                Settings.Combat.Follow.Enable;
                 if (!isActive)
                 {
                     _activeRoutine?.Stop();

@@ -192,9 +192,31 @@ public class CombatSettings
         public RangeNode<int> ZoneUpdateBuffer { get; set; } = new(1000, 500, 5000);
 
         public ToggleNode CloseFollow { get; set; } = new(true);
+        public ToggleNode DashEnabled { get; set; } = new(false);
+
+        [Menu("Input Frequency (ms)", "Minimum delay between successive movement inputs")]
+        public RangeNode<int> InputFrequency { get; set; } = new(50, 1, 100);
+
         public RangeNode<int> LeaderNearbyDistance { get; set; } = new(500, 100, 2000);
         public RangeNode<int> LeaderJumpDistance { get; set; } = new(2000, 500, 5000);
         public ToggleNode EnablePathfindingFallback { get; set; } = new(true);
         public RangeNode<int> MaxPathNodesPerTick { get; set; } = new(6, 1, 20);
+
+        public FollowVisualSettings Visual { get; set; } = new();
+        public FollowDebugSettings Debug { get; set; } = new();
+
+        [Submenu(CollapsedByDefault = false)]
+        public class FollowVisualSettings
+        {
+            public ToggleNode ShowFollowPath { get; set; } = new(true);
+            public ColorNode TaskLineColor { get; set; } = new ColorNode((uint)Color.FromArgb(200, 0, 200, 255).ToArgb());
+            public RangeNode<float> TaskLineWidth { get; set; } = new(2f, 1f, 5f);
+        }
+
+        [Submenu(CollapsedByDefault = true)]
+        public class FollowDebugSettings
+        {
+            public ToggleNode ShowDetailedDebug { get; set; } = new(false);
+        }
     }
 }

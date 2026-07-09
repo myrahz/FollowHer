@@ -9,6 +9,8 @@ using ExileCore.PoEMemory.Elements;
 using ExileCore.PoEMemory.MemoryObjects;
 using ExileCore.Shared.Helpers;
 using FollowHer.Core.Combat.Skills;
+using FollowHer.Core.Events;
+using FollowHer.Core.Events.Events;
 using FollowHer.Features.Following.Pathfinding;
 using FollowHer.Settings;
 using FollowHer.Utils;
@@ -58,12 +60,17 @@ public class FollowManager
     private DateTime _lastLeaderNearbyTime = DateTime.MinValue;
     private FollowTaskNode _activeFollowPortalTask;
 
+    private DateTime _nextMovementInputAt = DateTime.MinValue;
+    private Vector3? _lastMoveTargetWorld;
+
     public FollowManager(GameController gameController, SkillHandler skillHandler, SkillMonitor skillMonitor)
     {
         _gameController = gameController;
         _skillHandler = skillHandler;
         _skillMonitor = skillMonitor;
         _lineOfSight = new LineOfSight(gameController);
+
+        EventBus.Instance.Subscribe<RenderEvent>(HandleRender);
     }
 
     public bool Update()
@@ -104,6 +111,7 @@ public class FollowManager
                 var shouldMove = distanceToLeader >= settings.TransitionDistance ||
                                   (distanceToLeader >= settings.KeepWithinDistance && settings.CloseFollow);
 
+                LogDebug($"Leader visible, distance={distanceToLeader:F0}, shouldMove={shouldMove}");
                 return shouldMove && ExecuteMovement(leaderEntity.PosNum, leaderEntity.GridPosNum);
             }
 
@@ -115,9 +123,11 @@ public class FollowManager
 
             if (leaderPartyMember != null && !string.Equals(leaderPartyMember.ZoneName, currentZone, StringComparison.Ordinal))
             {
+                LogDebug($"Leader not visible, reported in different zone '{leaderPartyMember.ZoneName}' (current '{currentZone}') - attempting transition");
                 return TryFollowThroughZoneTransition(leaderPartyMember, currentZone);
             }
 
+            LogDebug($"Leader not visible, same zone - {(_lastKnownLeaderGrid != null ? "using last-known-position fallback" : "no last-known position yet")}");
             return TryFollowLastKnownPosition(player, settings);
         }
         catch (Exception ex)
@@ -149,6 +159,7 @@ public class FollowManager
             var nearbyPortal = FindNearbyPortal(playerPos, LeaderJumpPortalSearchRadius);
             if (nearbyPortal != null)
             {
+                LogDebug($"Leader distance jumped from {_previousLeaderDistance:F0} to {distanceToLeader:F0} - following through nearby portal");
                 _activeFollowPortalTask = new FollowTaskNode(nearbyPortal, settings.KeepWithinDistance, FollowTaskType.FollowLeaderPortal);
                 _leaderWasNearby = false;
             }
@@ -228,10 +239,12 @@ public class FollowManager
         var portal = GetBestPortalLabel(leaderPartyMember.ZoneName, referencePosition);
         if (portal != null)
         {
+            LogDebug($"Found matching portal for zone '{leaderPartyMember.ZoneName}' - clicking");
             ClickElement(portal.Label);
             return true;
         }
 
+        LogDebug($"No matching portal found for zone '{leaderPartyMember.ZoneName}' - falling back to party teleport button");
         return TryTeleportToLeader(leaderPartyMember);
     }
 
@@ -308,6 +321,9 @@ public class FollowManager
             _currentPath = rawPath is { Count: > 0 } ? SmoothPath(rawPath) : null;
             _currentPathIndex = 0;
             _currentPathTarget = target;
+            LogDebug(_currentPath != null
+                ? $"Computed path to last-known leader position with {_currentPath.Count} waypoint(s)"
+                : "No path found to last-known leader position - falling back to direct walk");
         }
 
         if (_currentPath == null)
@@ -423,6 +439,10 @@ public class FollowManager
         var screenPos = _gameController.IngameState.Camera.WorldToScreen(targetWorldPosition);
         if (screenPos == Vector2.Zero) return false;
 
+        _lastMoveTargetWorld = targetWorldPosition;
+
+        if (DateTime.Now < _nextMovementInputAt) return true;
+
         var dashSkill = targetGridPosition.HasValue
             ? TryGetDashSkill(_gameController.Player.GridPosNum, targetGridPosition.Value)
             : null;
@@ -433,6 +453,14 @@ public class FollowManager
             _skillHandler.UseMovementSkill(dashSkill?.Name ?? MoveSkillName, true);
         }
 
+        if (dashSkill != null)
+        {
+            LogDebug($"Using dash skill '{dashSkill.Name}' toward {targetWorldPosition}");
+        }
+
+        var inputFrequency = FollowHer.Instance.Settings.Combat.Follow.InputFrequency.Value;
+        _nextMovementInputAt = DateTime.Now.AddMilliseconds(inputFrequency);
+
         return true;
     }
 
@@ -441,6 +469,8 @@ public class FollowManager
     // blocked by an obstacle/door - mirroring AreWeThereYet's ShouldUseDash heuristic.
     private ActiveSkill TryGetDashSkill(Vector2 playerGrid, Vector2 targetGrid)
     {
+        if (!FollowHer.Instance.Settings.Combat.Follow.DashEnabled) return null;
+
         var distance = Vector2.Distance(playerGrid, targetGrid);
         if (distance < DashMinGridDistance || distance > DashMaxGridDistance) return null;
 
@@ -458,6 +488,29 @@ public class FollowManager
 
         return FollowHer.Instance.Settings.Combat.MovementSkills.Content
             .FirstOrDefault(s => s.Enabled && s.Name != MoveSkillName && _skillMonitor.CanUseSkill(s));
+    }
+
+    private void HandleRender(RenderEvent evt)
+    {
+        var visual = FollowHer.Instance.Settings.Combat.Follow.Visual;
+        if (!visual.ShowFollowPath || _lastMoveTargetWorld == null) return;
+
+        var player = _gameController.Player;
+        if (player == null) return;
+
+        var playerScreen = _gameController.IngameState.Camera.WorldToScreen(player.PosNum);
+        var targetScreen = _gameController.IngameState.Camera.WorldToScreen(_lastMoveTargetWorld.Value);
+        if (playerScreen == Vector2.Zero || targetScreen == Vector2.Zero) return;
+
+        evt.Graphics.DrawLine(playerScreen, targetScreen, visual.TaskLineWidth.Value, visual.TaskLineColor.Value);
+    }
+
+    private void LogDebug(string message)
+    {
+        if (FollowHer.Instance.Settings.Combat.Follow.Debug.ShowDetailedDebug)
+        {
+            DebugWindow.LogMsg($"[Follow] {message}");
+        }
     }
 
     public void Reset(AreaInstance newArea)
@@ -485,5 +538,7 @@ public class FollowManager
         _leaderWasNearby = false;
         _lastLeaderNearbyTime = DateTime.MinValue;
         _activeFollowPortalTask = null;
+        _nextMovementInputAt = DateTime.MinValue;
+        _lastMoveTargetWorld = null;
     }
 }
