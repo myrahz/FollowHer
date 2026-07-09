@@ -112,7 +112,14 @@ public class FollowManager
                                   (distanceToLeader >= settings.KeepWithinDistance && settings.CloseFollow);
 
                 LogDebug($"Leader visible, distance={distanceToLeader:F0}, shouldMove={shouldMove}");
-                return shouldMove && ExecuteMovement(leaderEntity.PosNum, leaderEntity.GridPosNum);
+
+                if (!shouldMove)
+                {
+                    StopMovement();
+                    return true;
+                }
+
+                return ExecuteMovement(leaderEntity.PosNum, leaderEntity.GridPosNum);
             }
 
             // Leader entity isn't in our local entity list - either they're in a different zone
@@ -306,7 +313,11 @@ public class FollowManager
 
         var target = _lastKnownLeaderGrid.Value;
         var start = ((int)Math.Round(player.GridPosNum.X), (int)Math.Round(player.GridPosNum.Y));
-        if (start == target) return false;
+        if (start == target)
+        {
+            StopMovement();
+            return true;
+        }
 
         var grid = _lineOfSight.GetGrid(LineOfSightDataType.Walkable);
         if (grid == null)
@@ -346,7 +357,8 @@ public class FollowManager
             return ExecuteMovement(nodeWorld, new Vector2(node.x, node.y));
         }
 
-        return false;
+        StopMovement();
+        return true;
     }
 
     private List<(int x, int y)> SmoothPath(List<(int x, int y)> rawPath)
@@ -432,6 +444,15 @@ public class FollowManager
 
         ExileCore.Input.SetCursorPos(position);
         ExileCore.Input.Click(MouseButtons.Left);
+    }
+
+    // Called whenever Follow decides no movement is needed this tick - releases any held
+    // movement/dash key so the character actually stops instead of drifting toward a stale
+    // cursor position (see plan notes on the KeepWithinDistance freeze/ping-pong bug).
+    private void StopMovement()
+    {
+        _skillHandler.ReleaseAllSkills();
+        _nextMovementInputAt = DateTime.MinValue;
     }
 
     private bool ExecuteMovement(Vector3 targetWorldPosition, Vector2? targetGridPosition = null)
