@@ -17,6 +17,7 @@ namespace FollowHer.Core.Combat
         private const string MOVE_SKILL_NAME = "Move";
         private Vector2 _preTargetMousePosition;
         private bool _inCombat;
+        private bool _combatAllowed = true;
 
         protected readonly FollowManager FollowManager;
 
@@ -40,6 +41,7 @@ namespace FollowHer.Core.Combat
             {
                 if (evt.IsActive)
                 {
+                    _combatAllowed = evt.CombatAllowed;
                     OnTickActive();
                 }
                 else
@@ -65,32 +67,40 @@ namespace FollowHer.Core.Combat
 
             try
             {
-                var (skill, target) = GetBestAction();
-
-                if (target?.Entity?.Address != CurrentTarget?.Entity?.Address)
+                if (_combatAllowed)
                 {
-                    EventBus.Instance.Publish(new TargetChangedEvent
-                    {
-                        OldTarget = CurrentTarget,
-                        NewTarget = target
-                    });
+                    var (skill, target) = GetBestAction();
 
-                    CurrentTarget = target;
+                    if (target?.Entity?.Address != CurrentTarget?.Entity?.Address)
+                    {
+                        EventBus.Instance.Publish(new TargetChangedEvent
+                        {
+                            OldTarget = CurrentTarget,
+                            NewTarget = target
+                        });
+
+                        CurrentTarget = target;
+                        SkillHandler.ReleaseAllSkills();
+                    }
+
+                    if (CurrentTarget != null && skill != null)
+                    {
+                        if (!_inCombat) BeginCombat();
+                        StateCoordinator.SetState(RoutineState.Active);
+                        ExecuteCombatTick(skill, CurrentTarget);
+                        return;
+                    }
+                }
+                else if (CurrentTarget != null)
+                {
+                    // Combat isn't allowed this tick (Follow-only activation) - drop any stale target.
+                    CurrentTarget = null;
                     SkillHandler.ReleaseAllSkills();
                 }
 
-                if (CurrentTarget != null && skill != null)
-                {
-                    if (!_inCombat) BeginCombat();
-                    StateCoordinator.SetState(RoutineState.Active);
-                    ExecuteCombatTick(skill, CurrentTarget);
-                }
-                else
-                {
-                    if (_inCombat) EndCombat();
-                    StateCoordinator.SetState(RoutineState.Orbwalking);
-                    Orbwalk();
-                }
+                if (_inCombat) EndCombat();
+                StateCoordinator.SetState(RoutineState.Orbwalking);
+                Orbwalk();
             }
             catch (Exception ex)
             {

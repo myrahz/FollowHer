@@ -144,8 +144,8 @@ namespace FollowHer
 
 
 
-                var isActive = _isToggled || Input.GetKeyState(Settings.PrecisionKey) || shouldAttack ||
-                                Settings.Combat.Follow.Enable;
+                var combatActive = _isToggled || Input.GetKeyState(Settings.PrecisionKey) || shouldAttack;
+                var isActive = combatActive || Settings.Combat.Follow.Enable;
                 if (!isActive)
                 {
                     _activeRoutine?.Stop();
@@ -154,7 +154,7 @@ namespace FollowHer
 
                 if (isActive && _activeRoutine != null)
                 {
-                    EventBus.Instance.Publish(new TickEvent(true));
+                    EventBus.Instance.Publish(new TickEvent(true, combatActive));
                 }
             }
             catch (Exception ex)
