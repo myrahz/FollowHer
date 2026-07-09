@@ -197,8 +197,6 @@ public class CombatSettings
         [Menu("Input Frequency (ms)", "Minimum delay between successive movement inputs")]
         public RangeNode<int> InputFrequency { get; set; } = new(50, 1, 100);
 
-        public RangeNode<int> LeaderNearbyDistance { get; set; } = new(500, 100, 2000);
-        public RangeNode<int> LeaderJumpDistance { get; set; } = new(2000, 500, 5000);
         public ToggleNode EnablePathfindingFallback { get; set; } = new(true);
         public RangeNode<int> MaxPathNodesPerTick { get; set; } = new(6, 1, 20);
 

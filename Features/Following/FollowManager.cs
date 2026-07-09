@@ -20,15 +20,15 @@ namespace FollowHer.Features.Following;
 public class FollowManager
 {
     private const string MoveSkillName = "Move";
-    private const float LeaderJumpRecentSeconds = 10f;
-    private const float LeaderJumpForgetSeconds = 15f;
     private const float FollowPortalWalkTolerance = 30f;
     private const float FollowPortalSearchRadius = 100f;
     private const float FollowPortalApproachTolerance = 50f;
-    private const float LeaderJumpPortalSearchRadius = 150f;
     private const int MaxFollowPortalAttempts = 10;
+    private const int PortalClickCooldownMs = 2500;
     private const int MaxPathSearchNodes = 20000;
     private const int PathSmoothingLookahead = 6;
+    private const float PathRetargetThresholdGrid = 20f;
+    private const int MinPathRecomputeIntervalMs = 400;
     private const float DashMinGridDistance = 30f;
     private const float DashMaxGridDistance = 150f;
 
@@ -38,27 +38,25 @@ public class FollowManager
     private readonly LineOfSight _lineOfSight;
     private readonly Random _random = new();
 
-    // Updated whenever the leader entity is visible - target for the last-known-position
-    // pathfinding fallback below.
+    // Updated whenever the leader entity is visible - fallback target once they're no longer
+    // directly resolvable (still believed to be in the same zone).
     private (int x, int y)? _lastKnownLeaderGrid;
 
     private List<(int x, int y)> _currentPath;
     private int _currentPathIndex;
     private (int x, int y)? _currentPathTarget;
+    private DateTime _nextPathRecomputeAt = DateTime.MinValue;
 
-    // Updated only while the leader is within LeaderNearbyDistance - the recovery waypoint used
-    // by the leader-jump/FollowLeaderPortal heuristic below.
-    private Vector3? _lastNearbyLeaderPosition;
-    private Vector2? _lastNearbyLeaderGrid;
+    // The single most recent target A* successfully reached - used as the search anchor when
+    // pathfinding subsequently fails (the leader likely just stepped through a transition).
+    private (int x, int y)? _lastPathfindableLeaderGrid;
+    private (int x, int y)? _portalSearchReference;
+    private int _portalClickAttempts;
+    private DateTime _nextPortalClickAt = DateTime.MinValue;
 
     private string _lastKnownLeaderZone = "";
     private DateTime _leaderZoneChangeTime = DateTime.MinValue;
     private DateTime _nextTpActionAt = DateTime.MinValue;
-
-    private float _previousLeaderDistance;
-    private bool _leaderWasNearby;
-    private DateTime _lastLeaderNearbyTime = DateTime.MinValue;
-    private FollowTaskNode _activeFollowPortalTask;
 
     private DateTime _nextMovementInputAt = DateTime.MinValue;
     private Vector3? _lastMoveTargetWorld;
@@ -86,28 +84,42 @@ public class FollowManager
 
         try
         {
+            // Zone check first: if the party panel confirms the leader is in a different zone,
+            // that fully owns the decision - direct/pathfinding movement only applies same-zone.
+            var leaderPartyMember = PartyPanelScanner.GetLeaderPartyMember(_gameController, leaderName);
+            var currentZone = _gameController.Area?.CurrentArea?.DisplayName;
+
+            if (leaderPartyMember != null && !string.Equals(leaderPartyMember.ZoneName, currentZone, StringComparison.Ordinal))
+            {
+                LogDebug($"Leader reported in different zone '{leaderPartyMember.ZoneName}' (current '{currentZone}') - attempting transition");
+                return TryFollowThroughZoneTransition(leaderPartyMember, currentZone);
+            }
+
             var leaderEntity = LeaderLocator.FindLeaderEntity(_gameController, leaderName);
-            float? distanceToLeader = null;
+            (int x, int y)? targetGrid;
 
             if (leaderEntity != null)
             {
+                targetGrid = RoundGrid(leaderEntity.GridPosNum);
+                _lastKnownLeaderGrid = targetGrid;
                 _lastKnownLeaderZone = "";
                 _leaderZoneChangeTime = DateTime.MinValue;
-                _lastKnownLeaderGrid = (
-                    (int)Math.Round(leaderEntity.GridPosNum.X),
-                    (int)Math.Round(leaderEntity.GridPosNum.Y));
-
-                distanceToLeader = Vector3.Distance(player.PosNum, leaderEntity.PosNum);
-                UpdateLeaderJumpTracking(distanceToLeader.Value, leaderEntity.PosNum, leaderEntity.GridPosNum, player.PosNum, settings);
+            }
+            else
+            {
+                targetGrid = _lastKnownLeaderGrid;
             }
 
-            if (_activeFollowPortalTask != null)
+            if (targetGrid == null)
             {
-                return ProcessFollowLeaderPortalTask(distanceToLeader ?? float.MaxValue, player.PosNum, settings);
+                LogDebug("Leader not visible and never seen this zone - nothing to do yet");
+                StopMovement();
+                return true;
             }
 
             if (leaderEntity != null)
             {
+                var distanceToLeader = Vector3.Distance(player.PosNum, leaderEntity.PosNum);
                 var shouldMove = distanceToLeader >= settings.TransitionDistance ||
                                   (distanceToLeader >= settings.KeepWithinDistance && settings.CloseFollow);
 
@@ -119,23 +131,15 @@ public class FollowManager
                     return true;
                 }
 
-                return ExecuteMovement(leaderEntity.PosNum, leaderEntity.GridPosNum);
+                if (HasClearLineOfSight(player.GridPosNum, leaderEntity.GridPosNum))
+                {
+                    return ExecuteMovement(leaderEntity.PosNum, leaderEntity.GridPosNum);
+                }
+
+                LogDebug("Leader visible but line of sight is blocked - pathfinding instead of walking straight at them");
             }
 
-            // Leader entity isn't in our local entity list - either they're in a different zone
-            // (handled below via the party panel) or just out of range in the same zone (handled
-            // by the last-known-position pathfinding fallback).
-            var leaderPartyMember = PartyPanelScanner.GetLeaderPartyMember(_gameController, leaderName);
-            var currentZone = _gameController.Area?.CurrentArea?.DisplayName;
-
-            if (leaderPartyMember != null && !string.Equals(leaderPartyMember.ZoneName, currentZone, StringComparison.Ordinal))
-            {
-                LogDebug($"Leader not visible, reported in different zone '{leaderPartyMember.ZoneName}' (current '{currentZone}') - attempting transition");
-                return TryFollowThroughZoneTransition(leaderPartyMember, currentZone);
-            }
-
-            LogDebug($"Leader not visible, same zone - {(_lastKnownLeaderGrid != null ? "using last-known-position fallback" : "no last-known position yet")}");
-            return TryFollowLastKnownPosition(player, settings);
+            return TryFollowPathToTarget(player, targetGrid.Value, settings);
         }
         catch (Exception ex)
         {
@@ -144,86 +148,156 @@ public class FollowManager
         }
     }
 
-    private void UpdateLeaderJumpTracking(float distanceToLeader, Vector3 leaderPos, Vector2 leaderGrid, Vector3 playerPos, CombatSettings.FollowSettings settings)
+    private static (int x, int y) RoundGrid(Vector2 gridPos)
     {
-        if (distanceToLeader < settings.LeaderNearbyDistance)
+        return ((int)Math.Round(gridPos.X), (int)Math.Round(gridPos.Y));
+    }
+
+    private bool HasClearLineOfSight(Vector2 playerGrid, Vector2 targetGrid)
+    {
+        try
         {
-            _leaderWasNearby = true;
-            _lastLeaderNearbyTime = DateTime.Now;
-            _lastNearbyLeaderPosition = leaderPos;
-            _lastNearbyLeaderGrid = leaderGrid;
+            return _lineOfSight.HasLineOfSight(playerGrid, targetGrid, LineOfSightDataType.Walkable);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool TryFollowPathToTarget(Entity player, (int x, int y) target, CombatSettings.FollowSettings settings)
+    {
+        var start = RoundGrid(player.GridPosNum);
+        if (start == target)
+        {
+            StopMovement();
+            return true;
         }
 
-        // Leader was close very recently and is now suddenly very far - most likely they just
-        // stepped through a portal near where they were standing. If there's a portal near us
-        // too, assume it's the same one and try to follow through it.
-        if (_leaderWasNearby &&
-            distanceToLeader > settings.LeaderJumpDistance &&
-            _previousLeaderDistance < settings.LeaderNearbyDistance &&
-            (DateTime.Now - _lastLeaderNearbyTime).TotalSeconds < LeaderJumpRecentSeconds &&
-            _activeFollowPortalTask == null)
+        if (!settings.EnablePathfindingFallback)
         {
-            var nearbyPortal = FindNearbyPortal(playerPos, LeaderJumpPortalSearchRadius);
-            if (nearbyPortal != null)
+            // A* disabled - always walk straight at the (possibly obstructed) target.
+            return ExecuteMovement(GridToWorldPosition(target.x, target.y), new Vector2(target.x, target.y));
+        }
+
+        var grid = _lineOfSight.GetGrid(LineOfSightDataType.Walkable);
+        if (grid == null)
+        {
+            // No terrain data yet - fall back to a direct walk toward the target.
+            return ExecuteMovement(GridToWorldPosition(target.x, target.y), new Vector2(target.x, target.y));
+        }
+
+        if (NeedsPathRecompute(target))
+        {
+            var rawPath = GridPathfinder.AStar(grid, start, target, MaxPathSearchNodes);
+            _currentPath = rawPath is { Count: > 0 } ? SmoothPath(rawPath) : null;
+            _currentPathIndex = 0;
+            _currentPathTarget = target;
+            _nextPathRecomputeAt = DateTime.Now.AddMilliseconds(MinPathRecomputeIntervalMs);
+
+            if (_currentPath != null)
             {
-                LogDebug($"Leader distance jumped from {_previousLeaderDistance:F0} to {distanceToLeader:F0} - following through nearby portal");
-                _activeFollowPortalTask = new FollowTaskNode(nearbyPortal, settings.KeepWithinDistance, FollowTaskType.FollowLeaderPortal);
-                _leaderWasNearby = false;
+                _lastPathfindableLeaderGrid = target;
+                LogDebug($"Computed path to leader with {_currentPath.Count} waypoint(s)");
+            }
+            else
+            {
+                LogDebug("No path found to leader's position - they may have just gone through a transition");
             }
         }
 
-        if (distanceToLeader > settings.LeaderJumpDistance && (DateTime.Now - _lastLeaderNearbyTime).TotalSeconds > LeaderJumpForgetSeconds)
+        if (_currentPath == null)
         {
-            _leaderWasNearby = false;
+            return TryFollowThroughRecentPortal(player.PosNum, target);
         }
 
-        _previousLeaderDistance = distanceToLeader;
+        while (_currentPathIndex < _currentPath.Count)
+        {
+            var node = _currentPath[_currentPathIndex];
+            var nodeWorld = GridToWorldPosition(node.x, node.y);
+
+            if (Vector3.Distance(player.PosNum, nodeWorld) <= settings.KeepWithinDistance * 1.5f)
+            {
+                _currentPathIndex++;
+                continue;
+            }
+
+            return ExecuteMovement(nodeWorld, new Vector2(node.x, node.y));
+        }
+
+        StopMovement();
+        return true;
     }
 
-    private bool ProcessFollowLeaderPortalTask(float distanceToLeader, Vector3 playerPos, CombatSettings.FollowSettings settings)
+    private bool NeedsPathRecompute((int x, int y) target)
     {
-        var task = _activeFollowPortalTask;
+        if (_currentPathTarget == null) return true;
+        if (_currentPath == null) return DateTime.Now >= _nextPathRecomputeAt;
+        if (_currentPathIndex >= _currentPath.Count) return true;
 
-        // Success: leader is back within range - the portal worked.
-        if (distanceToLeader < settings.LeaderNearbyDistance)
+        var drift = Vector2.Distance(
+            new Vector2(target.x, target.y),
+            new Vector2(_currentPathTarget.Value.x, _currentPathTarget.Value.y));
+
+        if (drift <= PathRetargetThresholdGrid) return false;
+
+        return DateTime.Now >= _nextPathRecomputeAt;
+    }
+
+    // Pathfinding to the leader's believed position just failed while we still think we're in the
+    // same zone - most likely they stepped through a transition the party panel hasn't caught up
+    // to reporting yet. Look for a portal near the last position we could actually reach, rather
+    // than near the player's own position.
+    private bool TryFollowThroughRecentPortal(Vector3 playerPos, (int x, int y) fallbackTarget)
+    {
+        if (_lastPathfindableLeaderGrid == null)
         {
-            _activeFollowPortalTask = null;
-            return false;
+            // Never successfully pathed to the leader yet this zone - best-effort direct walk.
+            return ExecuteMovement(GridToWorldPosition(fallbackTarget.x, fallbackTarget.y), new Vector2(fallbackTarget.x, fallbackTarget.y));
         }
 
-        if (task.AttemptCount >= MaxFollowPortalAttempts)
+        var referenceGrid = _lastPathfindableLeaderGrid.Value;
+
+        if (_portalSearchReference != referenceGrid)
         {
-            _activeFollowPortalTask = null;
-            return false;
+            _portalSearchReference = referenceGrid;
+            _portalClickAttempts = 0;
+            _nextPortalClickAt = DateTime.MinValue;
         }
 
-        if (DateTime.Now < task.NextAttemptAt) return true;
-
-        // Stage 1: walk to where the leader was last seen nearby.
-        var lastNearbyPos = _lastNearbyLeaderPosition ?? playerPos;
-        var distanceToLastLeaderPos = Vector3.Distance(playerPos, lastNearbyPos);
-        if (distanceToLastLeaderPos > FollowPortalWalkTolerance)
+        if (_portalClickAttempts >= MaxFollowPortalAttempts)
         {
-            return ExecuteMovement(lastNearbyPos, _lastNearbyLeaderGrid);
+            LogDebug("Gave up looking for a transition near the leader's last reachable position");
+            StopMovement();
+            return true;
         }
 
-        // Stage 2: find and click a portal near that position.
-        var nearbyPortal = FindNearbyPortal(playerPos, FollowPortalSearchRadius);
-        if (nearbyPortal == null)
+        var referenceWorld = GridToWorldPosition(referenceGrid.x, referenceGrid.y);
+
+        if (Vector3.Distance(playerPos, referenceWorld) > FollowPortalWalkTolerance)
         {
-            _activeFollowPortalTask = null;
-            return false;
+            return ExecuteMovement(referenceWorld, new Vector2(referenceGrid.x, referenceGrid.y));
         }
 
-        var distanceToPortal = Vector3.Distance(playerPos, nearbyPortal.ItemOnGround.PosNum);
+        var portal = FindNearbyPortal(referenceWorld, FollowPortalSearchRadius);
+        if (portal == null)
+        {
+            StopMovement();
+            return true;
+        }
+
+        var distanceToPortal = Vector3.Distance(playerPos, portal.ItemOnGround.PosNum);
         if (distanceToPortal > FollowPortalApproachTolerance)
         {
-            return ExecuteMovement(nearbyPortal.ItemOnGround.PosNum, nearbyPortal.ItemOnGround.GridPosNum);
+            return ExecuteMovement(portal.ItemOnGround.PosNum, portal.ItemOnGround.GridPosNum);
         }
 
-        ClickElement(nearbyPortal.Label);
-        task.AttemptCount++;
-        task.NextAttemptAt = DateTime.Now.AddMilliseconds(2500);
+        if (DateTime.Now < _nextPortalClickAt) return true;
+
+        LogDebug("Found a transition near the leader's last reachable position - clicking it");
+        ClickElement(portal.Label);
+        _portalClickAttempts++;
+        _nextPortalClickAt = DateTime.Now.AddMilliseconds(PortalClickCooldownMs);
         return true;
     }
 
@@ -242,7 +316,10 @@ public class FollowManager
             return true;
         }
 
-        var referencePosition = _lastNearbyLeaderPosition ?? _gameController.Player.PosNum;
+        var referencePosition = _lastPathfindableLeaderGrid.HasValue
+            ? GridToWorldPosition(_lastPathfindableLeaderGrid.Value.x, _lastPathfindableLeaderGrid.Value.y)
+            : _gameController.Player.PosNum;
+
         var portal = GetBestPortalLabel(leaderPartyMember.ZoneName, referencePosition);
         if (portal != null)
         {
@@ -305,60 +382,6 @@ public class FollowManager
             .Where(x => Vector3.Distance(referencePosition, x.ItemOnGround.PosNum) < maxDistance)
             .OrderBy(x => Vector3.Distance(referencePosition, x.ItemOnGround.PosNum))
             .FirstOrDefault();
-    }
-
-    private bool TryFollowLastKnownPosition(Entity player, CombatSettings.FollowSettings settings)
-    {
-        if (!settings.EnablePathfindingFallback || _lastKnownLeaderGrid == null) return false;
-
-        var target = _lastKnownLeaderGrid.Value;
-        var start = ((int)Math.Round(player.GridPosNum.X), (int)Math.Round(player.GridPosNum.Y));
-        if (start == target)
-        {
-            StopMovement();
-            return true;
-        }
-
-        var grid = _lineOfSight.GetGrid(LineOfSightDataType.Walkable);
-        if (grid == null)
-        {
-            // No terrain data yet - fall back to a direct walk toward the last-known point.
-            return ExecuteMovement(GridToWorldPosition(target.x, target.y), new Vector2(target.x, target.y));
-        }
-
-        if (_currentPath == null || _currentPathIndex >= _currentPath.Count || _currentPathTarget != target)
-        {
-            var rawPath = GridPathfinder.AStar(grid, start, target, MaxPathSearchNodes);
-            _currentPath = rawPath is { Count: > 0 } ? SmoothPath(rawPath) : null;
-            _currentPathIndex = 0;
-            _currentPathTarget = target;
-            LogDebug(_currentPath != null
-                ? $"Computed path to last-known leader position with {_currentPath.Count} waypoint(s)"
-                : "No path found to last-known leader position - falling back to direct walk");
-        }
-
-        if (_currentPath == null)
-        {
-            // No path found (e.g. the leader's last spot isn't reachable) - direct walk fallback.
-            return ExecuteMovement(GridToWorldPosition(target.x, target.y), new Vector2(target.x, target.y));
-        }
-
-        while (_currentPathIndex < _currentPath.Count)
-        {
-            var node = _currentPath[_currentPathIndex];
-            var nodeWorld = GridToWorldPosition(node.x, node.y);
-
-            if (Vector3.Distance(player.PosNum, nodeWorld) <= settings.KeepWithinDistance * 1.5f)
-            {
-                _currentPathIndex++;
-                continue;
-            }
-
-            return ExecuteMovement(nodeWorld, new Vector2(node.x, node.y));
-        }
-
-        StopMovement();
-        return true;
     }
 
     private List<(int x, int y)> SmoothPath(List<(int x, int y)> rawPath)
@@ -495,17 +518,7 @@ public class FollowManager
         var distance = Vector2.Distance(playerGrid, targetGrid);
         if (distance < DashMinGridDistance || distance > DashMaxGridDistance) return null;
 
-        bool hasLineOfSight;
-        try
-        {
-            hasLineOfSight = _lineOfSight.HasLineOfSight(playerGrid, targetGrid, LineOfSightDataType.Walkable);
-        }
-        catch
-        {
-            return null;
-        }
-
-        if (hasLineOfSight) return null;
+        if (HasClearLineOfSight(playerGrid, targetGrid)) return null;
 
         return FollowHer.Instance.Settings.Combat.MovementSkills.Content
             .FirstOrDefault(s => s.Enabled && s.Name != MoveSkillName && _skillMonitor.CanUseSkill(s));
@@ -550,15 +563,14 @@ public class FollowManager
         _currentPath = null;
         _currentPathIndex = 0;
         _currentPathTarget = null;
-        _lastNearbyLeaderPosition = null;
-        _lastNearbyLeaderGrid = null;
+        _nextPathRecomputeAt = DateTime.MinValue;
+        _lastPathfindableLeaderGrid = null;
+        _portalSearchReference = null;
+        _portalClickAttempts = 0;
+        _nextPortalClickAt = DateTime.MinValue;
         _lastKnownLeaderZone = "";
         _leaderZoneChangeTime = DateTime.MinValue;
         _nextTpActionAt = DateTime.MinValue;
-        _previousLeaderDistance = 0f;
-        _leaderWasNearby = false;
-        _lastLeaderNearbyTime = DateTime.MinValue;
-        _activeFollowPortalTask = null;
         _nextMovementInputAt = DateTime.MinValue;
         _lastMoveTargetWorld = null;
     }

@@ -142,12 +142,25 @@ namespace FollowHer.Utils
         {
             if (_terrainData == null) return false;
 
-            // Update debug visualization
-            _debugVisiblePoints.Clear();
-            UpdateDebugGrid(start, losType);
+            // Debug visualization bookkeeping (UpdateDebugGrid is an O(size^2) rebuild) is only
+            // worth paying for when the debug overlay is actually being rendered - this method is
+            // called frequently (pathing/LOS checks every tick) so skip it otherwise.
+            var debugVisualsEnabled = FollowHer.Instance.Settings.Render.EnableRendering &&
+                                       (FollowHer.Instance.Settings.Render.ShowTerrainDebug ||
+                                        FollowHer.Instance.Settings.Render.ShowWalkableDebug);
+
+            if (debugVisualsEnabled)
+            {
+                _debugVisiblePoints.Clear();
+                UpdateDebugGrid(start, losType);
+            }
 
             var isVisible = HasLineOfSightInternal(start, end, losType);
-            _debugRays.Add((start, end, isVisible));
+
+            if (debugVisualsEnabled)
+            {
+                _debugRays.Add((start, end, isVisible));
+            }
 
             return isVisible;
         }
