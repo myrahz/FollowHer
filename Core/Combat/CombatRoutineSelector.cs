@@ -19,19 +19,40 @@ namespace FollowHer.Core.Combat
             _routineTypes = DiscoverRoutines();
         }
 
+        private static string GetRoutineKey(Type t)
+        {
+            const string suffix = "Routine";
+            return t.Name.EndsWith(suffix, StringComparison.Ordinal)
+                ? t.Name[..^suffix.Length]
+                : t.Name;
+        }
+
         private Dictionary<string, Type> DiscoverRoutines()
         {
             try
             {
-                return AppDomain.CurrentDomain.GetAssemblies()
+                var groups = AppDomain.CurrentDomain.GetAssemblies()
                     .SelectMany(s => s.GetTypes())
                     .Where(t => !t.IsAbstract &&
                                !t.IsInterface &&
                                typeof(RoutineBase).IsAssignableFrom(t))
-                    .ToDictionary(
-                        t => t.Name.Replace("Routine", ""),
-                        t => t
-                    );
+                    .GroupBy(GetRoutineKey)
+                    .ToList();
+
+                var result = new Dictionary<string, Type>();
+                foreach (var group in groups)
+                {
+                    if (group.Count() > 1)
+                    {
+                        var typeNames = string.Join(", ", group.Select(t => t.FullName));
+                        DebugWindow.LogError($"[CombatRoutineSelector] Skipping routine name collision '{group.Key}': {typeNames}");
+                        continue;
+                    }
+
+                    result[group.Key] = group.First();
+                }
+
+                return result;
             }
             catch (Exception ex)
             {

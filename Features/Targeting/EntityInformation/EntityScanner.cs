@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
@@ -8,13 +8,14 @@ using ExileCore.PoEMemory.MemoryObjects;
 using ExileCore.Shared.Enums;
 using FollowHer.Core.Combat.Skills;
 using FollowHer.Core.Events;
-using FollowHer.Core.Events.Events;
 using FollowHer.Utils;
 
 namespace FollowHer.Features.Targeting.EntityInformation
 {
     public class EntityScanner
     {
+        private const int IncrementalUpdateIntervalMs = 50;
+
         private readonly GameController _gameController;
         private readonly LineOfSight _lineOfSight;
         private readonly HashSet<Entity> _trackedEntities;
@@ -26,6 +27,7 @@ namespace FollowHer.Features.Targeting.EntityInformation
         private Vector2 _lastPlayerPosition;
         private float _maxScanRange;
         private DateTime _lastFullScan;
+        private DateTime _lastIncrementalUpdate;
 
         public EntityScanner(GameController gameController, LineOfSight lineOfSight)
         {
@@ -37,9 +39,15 @@ namespace FollowHer.Features.Targeting.EntityInformation
             _lastSeenTimes = new Dictionary<Entity, DateTime>();
             _maxScanRange = 100f;
             _lastFullScan = DateTime.MinValue;
+            _lastIncrementalUpdate = DateTime.MinValue;
 
             var eventBus = EventBus.Instance;
             eventBus.Subscribe<AreaChangeEvent>(HandleAreaChange);
+        }
+
+        public void Dispose()
+        {
+            EventBus.Instance.Unsubscribe<AreaChangeEvent>(HandleAreaChange);
         }
 
         private void HandleAreaChange(AreaChangeEvent evt)
@@ -65,10 +73,12 @@ namespace FollowHer.Features.Targeting.EntityInformation
                 PerformFullScan(playerPosition, currentTime, new List<LineOfSightDataType> { LineOfSightDataType.Terrain });
                 _lastPlayerPosition = playerPosition;
                 _lastFullScan = currentTime;
+                _lastIncrementalUpdate = currentTime;
             }
-            else
+            else if ((currentTime - _lastIncrementalUpdate).TotalMilliseconds >= IncrementalUpdateIntervalMs)
             {
                 UpdateTrackedEntities(playerPosition, currentTime, new List<LineOfSightDataType> { LineOfSightDataType.Terrain });
+                _lastIncrementalUpdate = currentTime;
             }
 
             CleanupStaleEntities(currentTime);
@@ -91,10 +101,12 @@ namespace FollowHer.Features.Targeting.EntityInformation
                 PerformFullScan(playerPosition, currentTime, requiredLosTypes);
                 _lastPlayerPosition = playerPosition;
                 _lastFullScan = currentTime;
+                _lastIncrementalUpdate = currentTime;
             }
-            else
+            else if ((currentTime - _lastIncrementalUpdate).TotalMilliseconds >= IncrementalUpdateIntervalMs)
             {
                 UpdateTrackedEntities(playerPosition, currentTime, requiredLosTypes);
+                _lastIncrementalUpdate = currentTime;
             }
 
             CleanupStaleEntities(currentTime);
@@ -114,7 +126,7 @@ namespace FollowHer.Features.Targeting.EntityInformation
             {
                 validMonsters = new List<Entity>();
             }
-            
+
             var newEntities = new HashSet<Entity>();
 
             foreach (var entity in validMonsters)
@@ -128,91 +140,75 @@ namespace FollowHer.Features.Targeting.EntityInformation
                 UpdateEntityTracking(entity, distance, currentTime, playerPosition, losTypes);
             }
 
-            var removedEntities = _trackedEntities.Except(newEntities).ToList();
+            List<Entity> removedEntities;
+            lock (_lock)
+            {
+                removedEntities = _trackedEntities.Except(newEntities).ToList();
+                _trackedEntities.Clear();
+                _trackedEntities.UnionWith(newEntities);
+            }
+
             foreach (var entity in removedEntities)
             {
                 RemoveEntity(entity);
-            }
-
-            lock (_lock)
-            {
-                _trackedEntities.Clear();
-                _trackedEntities.UnionWith(newEntities);
             }
         }
 
         private void UpdateTrackedEntities(Vector2 playerPosition, DateTime currentTime, List<LineOfSightDataType> losTypes)
         {
-            var invalidEntities = new List<Entity>();
-
+            List<Entity> trackedSnapshot;
             lock (_lock)
             {
-                foreach (var entity in _trackedEntities)
-                {
-                    if (!IsEntityValid(entity))
-                    {
-                        invalidEntities.Add(entity);
-                        continue;
-                    }
+                trackedSnapshot = _trackedEntities.ToList();
+            }
 
-                    var distance = Vector2.Distance(playerPosition, entity.GridPosNum);
-                    UpdateEntityTracking(entity, distance, currentTime, playerPosition, losTypes);
+            var invalidEntities = new List<Entity>();
+
+            foreach (var entity in trackedSnapshot)
+            {
+                if (!IsEntityValid(entity))
+                {
+                    invalidEntities.Add(entity);
+                    continue;
                 }
 
-                foreach (var entity in invalidEntities)
-                {
-                    RemoveEntity(entity);
-                }
+                var distance = Vector2.Distance(playerPosition, entity.GridPosNum);
+                UpdateEntityTracking(entity, distance, currentTime, playerPosition, losTypes);
+            }
+
+            foreach (var entity in invalidEntities)
+            {
+                RemoveEntity(entity);
             }
         }
 
         private void UpdateEntityTracking(Entity entity, float distance, DateTime currentTime, Vector2 playerPosition, IReadOnlyCollection<LineOfSightDataType> losTypes)
         {
-            bool isNewEntity = !_entityDistances.ContainsKey(entity);
-            float? oldDistance = isNewEntity ? null : _entityDistances[entity];
-
-            bool losChanged = false;
-            if (!_entityLineOfSight.TryGetValue(entity, out var currentLoSStates))
+            Dictionary<LineOfSightDataType, bool> currentLoSStates;
+            lock (_lock)
             {
-                currentLoSStates = new Dictionary<LineOfSightDataType, bool>();
-                _entityLineOfSight[entity] = currentLoSStates;
+                if (!_entityLineOfSight.TryGetValue(entity, out currentLoSStates))
+                {
+                    currentLoSStates = new Dictionary<LineOfSightDataType, bool>();
+                    _entityLineOfSight[entity] = currentLoSStates;
+                }
             }
 
+            var losResults = new Dictionary<LineOfSightDataType, bool>();
             foreach (var losType in losTypes)
             {
-                var hadLineOfSight = currentLoSStates.TryGetValue(losType, out var previousLoS) && previousLoS;
-                var currentLoS = CheckLineOfSight(entity, playerPosition, losType);
-                currentLoSStates[losType] = currentLoS;
-
-                if (hadLineOfSight != currentLoS)
-                {
-                    losChanged = true;
-                    EventBus.Instance.Publish(new TargetInLineOfSightEvent(entity, currentLoS, entity.GridPosNum, distance));
-                }
+                losResults[losType] = CheckLineOfSight(entity, playerPosition, losType);
             }
 
             lock (_lock)
             {
+                foreach (var (losType, value) in losResults)
+                {
+                    currentLoSStates[losType] = value;
+                }
+
                 _entityDistances[entity] = distance;
                 _lastSeenTimes[entity] = currentTime;
-            }
-
-            if (isNewEntity)
-            {
-                EventBus.Instance.Publish(new EntityDiscoveredEvent
-                {
-                    Entity = entity,
-                    Distance = distance
-                });
-            }
-            else if (oldDistance.HasValue && (Math.Abs(oldDistance.Value - distance) > 5f || losChanged))
-            {
-                EventBus.Instance.Publish(new TargetStateChangedEvent(
-                    entity,
-                    entity.IsAlive,
-                    entity.IsTargetable,
-                    GetHealthPercentage(entity),
-                    distance));
             }
         }
 
@@ -225,34 +221,23 @@ namespace FollowHer.Features.Targeting.EntityInformation
                 _entityLineOfSight.Remove(entity);
                 _lastSeenTimes.Remove(entity);
             }
-
-            if (entity.GridPosNum != Vector2.Zero)
-            {
-                EventBus.Instance.Publish(new TargetLostEvent(
-                    entity,
-                    "Entity no longer valid",
-                    entity.GridPosNum));
-            }
         }
 
         private void CleanupStaleEntities(DateTime currentTime)
         {
-            var staleEntities = new List<Entity>();
+            List<Entity> staleEntities;
 
             lock (_lock)
             {
-                foreach (var kvp in _lastSeenTimes)
-                {
-                    if ((currentTime - kvp.Value).TotalSeconds > 5)
-                    {
-                        staleEntities.Add(kvp.Key);
-                    }
-                }
+                staleEntities = _lastSeenTimes
+                    .Where(kvp => (currentTime - kvp.Value).TotalSeconds > 5)
+                    .Select(kvp => kvp.Key)
+                    .ToList();
+            }
 
-                foreach (var entity in staleEntities)
-                {
-                    RemoveEntity(entity);
-                }
+            foreach (var entity in staleEntities)
+            {
+                RemoveEntity(entity);
             }
         }
 
@@ -302,21 +287,6 @@ namespace FollowHer.Features.Targeting.EntityInformation
             catch (Exception)
             {
                 return false;
-            }
-        }
-
-        private float GetHealthPercentage(Entity entity)
-        {
-            try
-            {
-                if (entity?.GetComponent<Life>() is not Life life)
-                    return 0f;
-
-                return life.HPPercentage;
-            }
-            catch (Exception)
-            {
-                return 0f;
             }
         }
 
@@ -378,6 +348,7 @@ namespace FollowHer.Features.Targeting.EntityInformation
                 _lastSeenTimes.Clear();
                 _lastPlayerPosition = Vector2.Zero;
                 _lastFullScan = DateTime.MinValue;
+                _lastIncrementalUpdate = DateTime.MinValue;
             }
         }
     }

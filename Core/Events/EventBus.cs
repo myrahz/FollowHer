@@ -3,9 +3,6 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using ExileCore;
 using ExileCore.PoEMemory.MemoryObjects;
-using FollowHer.Core.Combat;
-using FollowHer.Features.Targeting.Density;
-using FollowHer.Features.Targeting.EntityInformation;
 
 namespace FollowHer.Core.Events
 {
@@ -127,43 +124,5 @@ namespace FollowHer.Core.Events
     public class AreaChangeEvent
     {
         public AreaInstance NewArea { get; set; }
-    }
-
-    public class SkillUsedEvent
-    {
-        public string SkillName { get; set; }
-        public DateTime UseTime { get; set; }
-        public EntityInfo Target { get; set; }
-    }
-
-    public class CombatStateChangedEvent
-    {
-        public bool IsInCombat { get; set; }
-        public EntityInfo CurrentTarget { get; set; }
-    }
-
-    public class EntityDiscoveredEvent
-    {
-        public Entity Entity { get; set; }
-        public float Distance { get; set; }
-    }
-
-    public class DensityUpdatedEvent
-    {
-        public List<DensityInfo> Densities { get; set; }
-    }
-
-    public class WeightUpdatedEvent
-    {
-        public EntityInfo Entity { get; set; }
-        public float OldWeight { get; set; }
-        public float NewWeight { get; set; }
-    }
-
-    public class CombatRoutineChangedEvent
-    {
-        public string OldRoutineName { get; set; }
-        public string NewRoutineName { get; set; }
-        public RoutineBase NewRoutine { get; set; }
     }
 }

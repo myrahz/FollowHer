@@ -5,8 +5,6 @@ using ExileCore;
 using ExileCore.PoEMemory.Components;
 using ExileCore.PoEMemory.MemoryObjects;
 using ExileCore.Shared.Enums;
-using FollowHer.Core.Events;
-using FollowHer.Core.Events.Events;
 
 namespace FollowHer.Features.Targeting.Priority
 {
@@ -24,6 +22,11 @@ namespace FollowHer.Features.Targeting.Priority
         private float _maxTargetDistance = 100f;
         private bool _preferHigherHealth;
 
+        private float _normalRarityMultiplier = 1.0f;
+        private float _magicRarityMultiplier = 2.0f;
+        private float _rareRarityMultiplier = 3.0f;
+        private float _uniqueRarityMultiplier = 4.0f;
+
         private const int CACHE_CLEANUP_INTERVAL = 120;
         private int _frameCounter;
 
@@ -40,13 +43,24 @@ namespace FollowHer.Features.Targeting.Priority
             float healthWeight,
             float rarityWeight,
             float maxTargetDistance,
-            bool preferHigherHealth)
+            bool preferHigherHealth,
+            float normalRarityMultiplier = 1.0f,
+            float magicRarityMultiplier = 2.0f,
+            float rareRarityMultiplier = 3.0f,
+            float uniqueRarityMultiplier = 4.0f)
         {
-            _distanceWeight = distanceWeight;
-            _healthWeight = healthWeight;
-            _rarityWeight = rarityWeight;
-            _maxTargetDistance = maxTargetDistance;
-            _preferHigherHealth = preferHigherHealth;
+            lock (_lock)
+            {
+                _distanceWeight = distanceWeight;
+                _healthWeight = healthWeight;
+                _rarityWeight = rarityWeight;
+                _maxTargetDistance = maxTargetDistance;
+                _preferHigherHealth = preferHigherHealth;
+                _normalRarityMultiplier = normalRarityMultiplier;
+                _magicRarityMultiplier = magicRarityMultiplier;
+                _rareRarityMultiplier = rareRarityMultiplier;
+                _uniqueRarityMultiplier = uniqueRarityMultiplier;
+            }
         }
 
         public void UpdatePriorities(IEnumerable<Entity> entities)
@@ -60,21 +74,11 @@ namespace FollowHer.Features.Targeting.Priority
             {
                 if (!IsEntityValid(entity)) continue;
 
-                var oldWeight = GetCurrentWeight(entity);
                 var newWeight = CalculateWeight(entity, playerPos);
 
-                if (Math.Abs(oldWeight - newWeight) > 0.1f)
+                lock (_lock)
                 {
-                    lock (_lock)
-                    {
-                        _currentWeights[entity] = newWeight;
-                    }
-
-                    EventBus.Instance.Publish(new TargetPriorityChangedEvent(
-                        entity,
-                        oldWeight,
-                        newWeight,
-                        Vector2.Distance(playerPos, entity.GridPosNum)));
+                    _currentWeights[entity] = newWeight;
                 }
             }
 
@@ -87,44 +91,62 @@ namespace FollowHer.Features.Targeting.Priority
 
         private float CalculateWeight(Entity entity, Vector2 playerPos)
         {
+            float distanceWeight, healthWeight, rarityWeight, maxTargetDistance;
+            bool preferHigherHealth;
+            float normalMult, magicMult, rareMult, uniqueMult;
+
+            lock (_lock)
+            {
+                distanceWeight = _distanceWeight;
+                healthWeight = _healthWeight;
+                rarityWeight = _rarityWeight;
+                maxTargetDistance = _maxTargetDistance;
+                preferHigherHealth = _preferHigherHealth;
+                normalMult = _normalRarityMultiplier;
+                magicMult = _magicRarityMultiplier;
+                rareMult = _rareRarityMultiplier;
+                uniqueMult = _uniqueRarityMultiplier;
+            }
+
             var distance = Vector2.Distance(playerPos, entity.GridPosNum);
-            if (distance > _maxTargetDistance) return 0f;
+            if (distance > maxTargetDistance) return 0f;
 
             var weight = 0f;
 
-            var distanceNormalized = 1f - (distance / _maxTargetDistance);
-            weight += distanceNormalized * distanceNormalized * _distanceWeight;
+            var distanceNormalized = 1f - (distance / maxTargetDistance);
+            weight += distanceNormalized * distanceNormalized * distanceWeight;
 
-            weight += CalculateHealthPriority(entity, distanceNormalized);
-            weight += CalculateRarityPriority(entity, distanceNormalized);
+            weight += CalculateHealthPriority(entity, distanceNormalized, healthWeight, preferHigherHealth);
+            weight += CalculateRarityPriority(entity, distanceNormalized, rarityWeight, normalMult, magicMult, rareMult, uniqueMult);
 
             return weight;
         }
 
-        private float CalculateHealthPriority(Entity entity, float distanceFactor)
+        private float CalculateHealthPriority(Entity entity, float distanceFactor, float healthWeight, bool preferHigherHealth)
         {
             var life = GetLifeComponent(entity);
             if (life == null) return 0f;
 
             var totalHealthPercent = life.HPPercentage + life.ESPercentage;
-            var healthPriority = _preferHigherHealth ? totalHealthPercent : (1f - totalHealthPercent);
+            var healthPriority = preferHigherHealth ? totalHealthPercent : (1f - totalHealthPercent);
 
-            return healthPriority * _healthWeight * distanceFactor;
+            return healthPriority * healthWeight * distanceFactor;
         }
 
-        private float CalculateRarityPriority(Entity entity, float distanceFactor)
+        private float CalculateRarityPriority(Entity entity, float distanceFactor, float rarityWeight,
+            float normalMult, float magicMult, float rareMult, float uniqueMult)
         {
             var rarity = GetMonsterRarity(entity);
 
             var rarityMultiplier = rarity switch
             {
-                MonsterRarity.Unique => 4.0f,
-                MonsterRarity.Rare => 3.0f,
-                MonsterRarity.Magic => 2.0f,
-                _ => 1.0f
+                MonsterRarity.Unique => uniqueMult,
+                MonsterRarity.Rare => rareMult,
+                MonsterRarity.Magic => magicMult,
+                _ => normalMult
             };
 
-            return rarityMultiplier * _rarityWeight * distanceFactor;
+            return rarityMultiplier * rarityWeight * distanceFactor;
         }
 
         private Life GetLifeComponent(Entity entity)
@@ -153,14 +175,6 @@ namespace FollowHer.Features.Targeting.Priority
                     _rarityCache[entity] = rarity;
                 }
                 return rarity;
-            }
-        }
-
-        private float GetCurrentWeight(Entity entity)
-        {
-            lock (_lock)
-            {
-                return _currentWeights.TryGetValue(entity, out var weight) ? weight : 0f;
             }
         }
 

@@ -3,8 +3,6 @@ using System.Linq;
 using System.Numerics;
 using ExileCore;
 using ExileCore.PoEMemory.MemoryObjects;
-using FollowHer.Core.Events;
-using FollowHer.Core.Events.Events;
 using FollowHer.Features.Targeting.EntityInformation;
 using FollowHer.Features.Targeting.Priority;
 using FollowHer.Features.Targeting.Density;
@@ -29,6 +27,7 @@ namespace FollowHer.Features.Targeting
         private float _targetSwitchCooldown = 0.5f;
         private float _minWeightDifferenceForSwitch = 0.5f;
         private float _maxTargetDistance = 100f;
+        private bool _prioritizeCurrentTarget = true;
 
         private float _baseClusterBonus = 0.1f;
         private float _maxClusterBonus = 2.0f;
@@ -42,7 +41,7 @@ namespace FollowHer.Features.Targeting
             _gameController = gameController;
             _entityScanner = entityScanner;
             _priorityCalculator = priorityCalculator;
-            _densityAnalyzer = new DensityAnalyzer(gameController, lineOfSight);
+            _densityAnalyzer = new DensityAnalyzer(gameController, entityScanner);
             _lineOfSight = lineOfSight;
             
             _settingsMonitor = new TargetingSettingsMonitor(FollowHer.Instance.Settings.Targeting);
@@ -52,8 +51,9 @@ namespace FollowHer.Features.Targeting
         public void Configure()
         {
             _targetSwitchCooldown = FollowHer.Instance.Settings.Targeting.TargetSwitchThreshold;
-            _minWeightDifferenceForSwitch = FollowHer.Instance.Settings.Targeting.TargetSwitchThreshold;
+            _minWeightDifferenceForSwitch = FollowHer.Instance.Settings.Targeting.MinWeightDifferenceForSwitch;
             _maxTargetDistance = FollowHer.Instance.Settings.Targeting.MaxTargetRange;
+            _prioritizeCurrentTarget = FollowHer.Instance.Settings.Targeting.PrioritizeCurrentTarget;
 
             var densitySettings = FollowHer.Instance.Settings.Targeting.Density;
             _baseClusterBonus = densitySettings.BaseClusterBonus;
@@ -67,12 +67,17 @@ namespace FollowHer.Features.Targeting
             );
 
             var priorities = FollowHer.Instance.Settings.Targeting.Priorities;
+            var rarity = priorities.Rarity;
             _priorityCalculator.Configure(
                 distanceWeight: priorities.DistanceWeight,
                 healthWeight: priorities.Health.HealthWeight,
-                rarityWeight: priorities.Rarity.ConsiderRarity ? 1.0f : 0f,
+                rarityWeight: rarity.ConsiderRarity ? 1.0f : 0f,
                 maxTargetDistance: FollowHer.Instance.Settings.Targeting.MaxTargetRange,
-                preferHigherHealth: priorities.Health.PreferHigherHealth
+                preferHigherHealth: priorities.Health.PreferHigherHealth,
+                normalRarityMultiplier: rarity.NormalWeight,
+                magicRarityMultiplier: rarity.MagicWeight,
+                rareRarityMultiplier: rarity.RareWeight,
+                uniqueRarityMultiplier: rarity.UniqueWeight
             );
 
             _currentTarget = null;
@@ -135,10 +140,6 @@ namespace FollowHer.Features.Targeting
                     var distance = Vector2.Distance(playerPos, _currentTarget.GridPosNum);
                     if (distance > _maxTargetDistance)
                     {
-                        EventBus.Instance.Publish(new TargetOutOfRangeEvent(
-                            _currentTarget,
-                            distance,
-                            _maxTargetDistance));
                         _currentTarget = null;
                     }
                 }
@@ -168,24 +169,8 @@ namespace FollowHer.Features.Targeting
             var shouldSwitch = ShouldSwitchTarget(bestTarget);
             if (shouldSwitch)
             {
-                var oldTarget = _currentTarget;
                 _currentTarget = bestTarget;
                 _lastSelectionTime = DateTime.UtcNow;
-
-                var weight = CalculateFinalWeight(bestTarget);
-                EventBus.Instance.Publish(new TargetAcquiredEvent(
-                    bestTarget,
-                    Vector2.Distance(playerPos, bestTarget.GridPosNum),
-                    bestTarget.GridPosNum,
-                    weight));
-
-                if (oldTarget != null)
-                {
-                    EventBus.Instance.Publish(new TargetLostEvent(
-                        oldTarget,
-                        "Switched to higher priority target",
-                        oldTarget.GridPosNum));
-                }
             }
         }
 
@@ -285,19 +270,14 @@ namespace FollowHer.Features.Targeting
             var newWeight = CalculateFinalWeight(newTarget);
             var currentWeight = CalculateFinalWeight(_currentTarget);
 
+            if (!_prioritizeCurrentTarget) return newWeight > currentWeight;
+
             return newWeight > currentWeight + _minWeightDifferenceForSwitch;
         }
 
         private void HandleTargetLost()
         {
-            if (_currentTarget != null)
-            {
-                EventBus.Instance.Publish(new TargetLostEvent(
-                    _currentTarget,
-                    "Target is no longer valid or in range",
-                    _currentTarget.GridPosNum));
-                _currentTarget = null;
-            }
+            _currentTarget = null;
         }
 
         private bool IsTargetValid(Entity entity)
@@ -319,8 +299,9 @@ namespace FollowHer.Features.Targeting
 
         public void Dispose()
         {
-            _settingsMonitor.OnSettingsChanged -= () => Configure();
             _settingsMonitor.Dispose();
+            _entityScanner.Dispose();
+            _lineOfSight.Dispose();
         }
     }
 }

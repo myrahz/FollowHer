@@ -21,6 +21,13 @@ public class FollowHerSettings : ISettings
     public RangeNode<int> DistanceToLeaderToAttack { get; set; } =  new(40, 20, 200);
     public HotkeyNode PrecisionKey { get; set; } = new(Keys.None);
     public HotkeyNode PrecisionToggleKey { get; set; } = new(Keys.None);
+
+    [Menu("Movement Toggle Key", "Toggles following the leader on/off, independent of the Combat > Follow > Enable setting")]
+    public HotkeyNode MovementToggleKey { get; set; } = new(Keys.None);
+
+    [Menu("Fighting Toggle Key", "Toggles attacking on/off, in addition to the Precision toggle key/hotkey")]
+    public HotkeyNode FightingToggleKey { get; set; } = new(Keys.None);
+
     public RenderSettings Render { get; set; } = new();
     public TargetingSettings Targeting { get; set; } = new();
     public CombatSettings Combat { get; set; } = new();
@@ -84,7 +91,12 @@ public class TargetingSettings
     public RangeNode<int> ScanRadius { get; set; } = new(100, 1, 500);
     public RangeNode<float> MaxTargetRange { get; set; } = new(100f, 0f, 200f);
     public ToggleNode PrioritizeCurrentTarget { get; set; } = new(true);
+
+    [Menu("Target Switch Cooldown (s)", "Minimum time between target switches")]
     public RangeNode<float> TargetSwitchThreshold { get; set; } = new(0.0f, 0.0f, 3.0f);
+
+    [Menu("Min Weight Difference To Switch", "Minimum weight advantage a new target must have over the current one to switch")]
+    public RangeNode<float> MinWeightDifferenceForSwitch { get; set; } = new(0.5f, 0f, 5f);
 
     public PrioritySettings Priorities { get; set; } = new();
     public LineOfSightSettings LineOfSight { get; set; } = new();
@@ -94,8 +106,6 @@ public class TargetingSettings
     public class LineOfSightSettings
     {
         public ToggleNode RequireLineOfSight { get; set; } = new(true);
-        public ToggleNode ConsiderTerrainHeight { get; set; } = new(true);
-        public RangeNode<float> TerrainHeightWeight { get; set; } = new(1.0f, 0f, 5f);
     }
 
     [Submenu(CollapsedByDefault = false)]
@@ -192,16 +202,21 @@ public class CombatSettings
         public RangeNode<int> ZoneUpdateBuffer { get; set; } = new(1000, 500, 5000);
 
         public ToggleNode CloseFollow { get; set; } = new(true);
+
+        [Menu("Dash Enabled", "Use an enabled movement skill instead of walking specifically when the path to the target is blocked")]
         public ToggleNode DashEnabled { get; set; } = new(false);
+
+        [Menu("Prefer Movement Skills For Travel", "Always use an enabled movement skill instead of walking when in range, even with a clear path - not just to get through obstacles")]
+        public ToggleNode PreferMovementSkillsForTravel { get; set; } = new(false);
 
         [Menu("Input Frequency (ms)", "Minimum delay between successive movement inputs")]
         public RangeNode<int> InputFrequency { get; set; } = new(50, 1, 100);
 
         public ToggleNode EnablePathfindingFallback { get; set; } = new(true);
-        public RangeNode<int> MaxPathNodesPerTick { get; set; } = new(6, 1, 20);
 
         public FollowVisualSettings Visual { get; set; } = new();
         public FollowDebugSettings Debug { get; set; } = new();
+        public FollowTaskSettings Tasks { get; set; } = new();
 
         [Submenu(CollapsedByDefault = false)]
         public class FollowVisualSettings
@@ -215,6 +230,16 @@ public class CombatSettings
         public class FollowDebugSettings
         {
             public ToggleNode ShowDetailedDebug { get; set; } = new(false);
+        }
+
+        [Submenu(CollapsedByDefault = true)]
+        public class FollowTaskSettings
+        {
+            [Menu("Pick Up Quest Items", "Walk to and pick up nearby quest items while following")]
+            public ToggleNode PickUpQuestItems { get; set; } = new(true);
+
+            [Menu("Quest Item Pickup Range", "Maximum distance to a quest item before walking to pick it up")]
+            public RangeNode<int> QuestItemPickupRange { get; set; } = new(500, 50, 2000);
         }
     }
 }

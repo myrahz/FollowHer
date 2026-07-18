@@ -104,6 +104,8 @@ namespace FollowHer.Features.Rendering
             var debugInfo = new List<string>
             {
                 $"State: {state}",
+                $"Movement Enabled: {FollowHer.Instance.MovementEnabled}",
+                $"Fighting Enabled: {FollowHer.Instance.FightingEnabled}",
                 $"Cursor Pos: {ExileCore.Input.MousePositionNum}"
             };
 

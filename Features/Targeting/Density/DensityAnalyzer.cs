@@ -4,8 +4,7 @@ using System.Linq;
 using System.Numerics;
 using ExileCore;
 using ExileCore.PoEMemory.MemoryObjects;
-using FollowHer.Core.Events;
-using FollowHer.Features.Targeting.Density;
+using FollowHer.Features.Targeting.EntityInformation;
 using FollowHer.Utils;
 
 namespace FollowHer.Features.Targeting.Density
@@ -13,7 +12,7 @@ namespace FollowHer.Features.Targeting.Density
     public class DensityAnalyzer
     {
         private readonly GameController _gameController;
-        private readonly LineOfSight _lineOfSight;
+        private readonly EntityScanner _entityScanner;
         private readonly Dictionary<Vector2, DensityInfo> _densityClusters;
         private readonly object _lock = new();
 
@@ -22,19 +21,22 @@ namespace FollowHer.Features.Targeting.Density
         private bool _requireLineOfSight;
         private DateTime _lastUpdate;
 
-        public DensityAnalyzer(GameController gameController, LineOfSight lineOfSight)
+        public DensityAnalyzer(GameController gameController, EntityScanner entityScanner)
         {
             _gameController = gameController;
-            _lineOfSight = lineOfSight;
+            _entityScanner = entityScanner;
             _densityClusters = new Dictionary<Vector2, DensityInfo>();
             _lastUpdate = DateTime.MinValue;
         }
 
         public void Configure(float maxRadius, float minEntities, bool requireLineOfSight)
         {
-            _maxRadius = maxRadius;
-            _minEntities = minEntities;
-            _requireLineOfSight = requireLineOfSight;
+            lock (_lock)
+            {
+                _maxRadius = maxRadius;
+                _minEntities = minEntities;
+                _requireLineOfSight = requireLineOfSight;
+            }
         }
 
         public void Update(IEnumerable<Entity> entities, IReadOnlyCollection<LineOfSightDataType> losTypes)
@@ -46,9 +48,16 @@ namespace FollowHer.Features.Targeting.Density
 
             try
             {
+                float maxRadius, minEntities;
+                lock (_lock)
+                {
+                    maxRadius = _maxRadius;
+                    minEntities = _minEntities;
+                }
+
                 var playerPos = _gameController.Player.GridPosNum;
                 var validEntities = FilterEntities(entities, playerPos, losTypes);
-                var clusters = FindDensityClusters(validEntities, playerPos);
+                var clusters = FindDensityClusters(validEntities, maxRadius, minEntities);
 
                 lock (_lock)
                 {
@@ -58,11 +67,6 @@ namespace FollowHer.Features.Targeting.Density
                         _densityClusters[cluster.Center] = cluster;
                     }
                 }
-
-                EventBus.Instance.Publish(new DensityUpdatedEvent
-                {
-                    Densities = clusters.ToList()
-                });
 
                 _lastUpdate = currentTime;
             }
@@ -74,6 +78,14 @@ namespace FollowHer.Features.Targeting.Density
 
         private IEnumerable<Entity> FilterEntities(IEnumerable<Entity> entities, Vector2 playerPos, IReadOnlyCollection<LineOfSightDataType> losTypes)
         {
+            bool requireLineOfSight;
+            float maxRadius;
+            lock (_lock)
+            {
+                requireLineOfSight = _requireLineOfSight;
+                maxRadius = _maxRadius;
+            }
+
             return entities.Where(entity =>
             {
                 if (entity == null || !entity.IsValid) return false;
@@ -81,11 +93,12 @@ namespace FollowHer.Features.Targeting.Density
                 if (!entity.IsTargetable || entity.IsHidden) return false;
 
                 var distance = Vector2.Distance(playerPos, entity.GridPosNum);
-                if (distance > _maxRadius * 2) return false;
+                if (distance > maxRadius * 2) return false;
 
-                if (_requireLineOfSight)
+                if (requireLineOfSight)
                 {
-                    if (!losTypes.Any(losType => _lineOfSight.HasLineOfSight(playerPos, entity.GridPosNum, losType)))
+                    // Reuse EntityScanner's already-computed LOS cache instead of re-raycasting.
+                    if (!losTypes.Any(losType => _entityScanner.GetEntityLineOfSight(entity, losType) == true))
                         return false;
                 }
 
@@ -93,7 +106,7 @@ namespace FollowHer.Features.Targeting.Density
             });
         }
 
-        private List<DensityInfo> FindDensityClusters(IEnumerable<Entity> entities, Vector2 playerPos)
+        private List<DensityInfo> FindDensityClusters(IEnumerable<Entity> entities, float maxRadius, float minEntities)
         {
             var remainingEntities = new HashSet<Entity>(entities);
             var clusters = new List<DensityInfo>();
@@ -101,11 +114,11 @@ namespace FollowHer.Features.Targeting.Density
             while (remainingEntities.Count > 0)
             {
                 var seedEntity = remainingEntities.First();
-                var clusterEntities = GetEntitiesInRange(seedEntity, remainingEntities);
+                var clusterEntities = GetEntitiesInRange(seedEntity, remainingEntities, maxRadius);
 
-                if (clusterEntities.Count >= _minEntities)
+                if (clusterEntities.Count >= minEntities)
                 {
-                    var density = DensityInfo.Calculate(clusterEntities, _maxRadius, _minEntities);
+                    var density = DensityInfo.Calculate(clusterEntities, maxRadius, minEntities);
                     if (density != null)
                     {
                         clusters.Add(density);
@@ -121,7 +134,7 @@ namespace FollowHer.Features.Targeting.Density
             return clusters.OrderByDescending(c => c.DensityScore).ToList();
         }
 
-        private List<Entity> GetEntitiesInRange(Entity center, IEnumerable<Entity> entities)
+        private List<Entity> GetEntitiesInRange(Entity center, IEnumerable<Entity> entities, float maxRadius)
         {
             var inRange = new List<Entity>();
             var centerPos = center.GridPosNum;
@@ -129,7 +142,7 @@ namespace FollowHer.Features.Targeting.Density
             foreach (var entity in entities)
             {
                 var distance = Vector2.Distance(centerPos, entity.GridPosNum);
-                if (distance <= _maxRadius)
+                if (distance <= maxRadius)
                 {
                     inRange.Add(entity);
                 }

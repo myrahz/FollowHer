@@ -169,6 +169,7 @@ namespace FollowHer.Core.Combat
             if (disposing)
             {
                 Stop();
+                FollowManager.Dispose();
             }
             base.Dispose(disposing);
         }

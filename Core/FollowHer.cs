@@ -21,6 +21,11 @@ namespace FollowHer
 
         private IRoutine _activeRoutine;
         private bool _isToggled;
+        private bool _movementToggled;
+        private bool _fightingToggled;
+
+        public bool MovementEnabled { get; private set; }
+        public bool FightingEnabled { get; private set; }
 
         public FollowHer()
         {
@@ -34,12 +39,24 @@ namespace FollowHer
             {
                 Input.RegisterKey(Settings.PrecisionKey);
                 Input.RegisterKey(Settings.PrecisionToggleKey);
+                Input.RegisterKey(Settings.MovementToggleKey);
+                Input.RegisterKey(Settings.FightingToggleKey);
 
                 Settings.PrecisionKey.OnValueChanged += () => Input.RegisterKey(Settings.PrecisionKey);
                 Settings.PrecisionToggleKey.OnValueChanged += () =>
                 {
                     Input.RegisterKey(Settings.PrecisionToggleKey);
                     _isToggled = false;
+                };
+                Settings.MovementToggleKey.OnValueChanged += () =>
+                {
+                    Input.RegisterKey(Settings.MovementToggleKey);
+                    _movementToggled = false;
+                };
+                Settings.FightingToggleKey.OnValueChanged += () =>
+                {
+                    Input.RegisterKey(Settings.FightingToggleKey);
+                    _fightingToggled = false;
                 };
 
                 var routineSelector = new CombatRoutineSelector(GameController);
@@ -96,19 +113,9 @@ namespace FollowHer
         public override void AreaChange(AreaInstance area)
         {
             _isToggled = false;
+            _movementToggled = false;
+            _fightingToggled = false;
             EventBus.Instance.Publish(new AreaChangeEvent { NewArea = area });
-        }
-
-        public override void EntityAdded(Entity entity)
-        {
-            if (entity != null && entity.IsValid)
-            {
-                EventBus.Instance.Publish(new EntityDiscoveredEvent
-                {
-                    Entity = entity,
-                    Distance = entity.DistancePlayer
-                });
-            }
         }
 
         public override Job Tick()
@@ -120,6 +127,14 @@ namespace FollowHer
                 if (Settings.PrecisionToggleKey.PressedOnce())
                 {
                     _isToggled = !_isToggled;
+                }
+                if (Settings.MovementToggleKey.PressedOnce())
+                {
+                    _movementToggled = !_movementToggled;
+                }
+                if (Settings.FightingToggleKey.PressedOnce())
+                {
+                    _fightingToggled = !_fightingToggled;
                 }
                 bool shouldAttack = false;
                 if (Settings.AttackWhenLeaderIsAttacking)
@@ -144,8 +159,13 @@ namespace FollowHer
 
 
 
-                var combatActive = _isToggled || Input.GetKeyState(Settings.PrecisionKey) || shouldAttack;
-                var isActive = combatActive || Settings.Combat.Follow.Enable;
+                var combatActive = _isToggled || _fightingToggled || Input.GetKeyState(Settings.PrecisionKey) || shouldAttack;
+                var movementActive = Settings.Combat.Follow.Enable || _movementToggled;
+                var isActive = combatActive || movementActive;
+
+                MovementEnabled = movementActive;
+                FightingEnabled = combatActive;
+
                 if (!isActive)
                 {
                     _activeRoutine?.Stop();

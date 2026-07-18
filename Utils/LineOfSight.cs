@@ -39,6 +39,26 @@ namespace FollowHer.Utils
             var eventBus = EventBus.Instance;
             eventBus.Subscribe<AreaChangeEvent>(HandleAreaChange);
             eventBus.Subscribe<RenderEvent>(HandleRender);
+
+            // Populate immediately for the *current* area rather than waiting for the next
+            // AreaChangeEvent - otherwise a freshly-constructed instance (e.g. right after
+            // switching combat strategy mid-map) has blank terrain data and HasLineOfSight
+            // returns false unconditionally until the player next changes zones.
+            try
+            {
+                PopulateTerrainData();
+            }
+            catch (Exception ex)
+            {
+                DebugWindow.LogError($"[LineOfSight] Error populating initial terrain data: {ex.Message}");
+            }
+        }
+
+        public void Dispose()
+        {
+            var eventBus = EventBus.Instance;
+            eventBus.Unsubscribe<AreaChangeEvent>(HandleAreaChange);
+            eventBus.Unsubscribe<RenderEvent>(HandleRender);
         }
 
         private void HandleRender(RenderEvent evt)
@@ -93,6 +113,11 @@ namespace FollowHer.Utils
         
         private void HandleAreaChange(AreaChangeEvent evt)
         {
+            PopulateTerrainData();
+        }
+
+        private void PopulateTerrainData()
+        {
             _areaDimensions = _gameController.IngameState.Data.AreaDimensions;
             var rawTargetingData = _gameController.IngameState.Data.RawTerrainTargetingData;
             var rawWalkableData = _gameController.IngameState.Data.RawPathfindingData;
@@ -111,7 +136,14 @@ namespace FollowHer.Utils
                 Array.Copy(rawWalkableData[y], _walkableData[y], rawWalkableData[y].Length);
             });
 
-            UpdateDebugGrid(_gameController.Player.GridPosNum, LineOfSightDataType.Terrain);
+            var debugVisualsEnabled = FollowHer.Instance.Settings.Render.EnableRendering &&
+                                       (FollowHer.Instance.Settings.Render.ShowTerrainDebug ||
+                                        FollowHer.Instance.Settings.Render.ShowWalkableDebug);
+
+            if (debugVisualsEnabled && _gameController.Player != null)
+            {
+                UpdateDebugGrid(_gameController.Player.GridPosNum, LineOfSightDataType.Terrain);
+            }
         }
 
         private void UpdateDebugGrid(Vector2 center, LineOfSightDataType losType)

@@ -12,6 +12,7 @@ using FollowHer.Core.Combat.Skills;
 using FollowHer.Core.Events;
 using FollowHer.Core.Events.Events;
 using FollowHer.Features.Following.Pathfinding;
+using FollowHer.Features.Following.Tasks;
 using FollowHer.Settings;
 using FollowHer.Utils;
 
@@ -61,6 +62,13 @@ public class FollowManager
     private DateTime _nextMovementInputAt = DateTime.MinValue;
     private Vector3? _lastMoveTargetWorld;
 
+    // Side-tasks checked (in order) before any follow/movement decision each tick - add new
+    // IFollowTask implementations here to extend what Follow can do besides move/attack.
+    private readonly List<IFollowTask> _tasks = new()
+    {
+        new QuestItemPickupTask(),
+    };
+
     public FollowManager(GameController gameController, SkillHandler skillHandler, SkillMonitor skillMonitor)
     {
         _gameController = gameController;
@@ -84,6 +92,15 @@ public class FollowManager
 
         try
         {
+            var taskContext = new FollowTaskContext(_gameController, player, this);
+            foreach (var task in _tasks)
+            {
+                if (task.TryExecute(taskContext))
+                {
+                    return true;
+                }
+            }
+
             // Zone check first: if the party panel confirms the leader is in a different zone,
             // that fully owns the decision - direct/pathfinding movement only applies same-zone.
             var leaderPartyMember = PartyPanelScanner.GetLeaderPartyMember(_gameController, leaderName);
@@ -458,7 +475,7 @@ public class FollowManager
         return null;
     }
 
-    private void ClickElement(Element element)
+    internal void ClickElement(Element element)
     {
         if (element == null) return;
 
@@ -478,7 +495,7 @@ public class FollowManager
         _nextMovementInputAt = DateTime.MinValue;
     }
 
-    private bool ExecuteMovement(Vector3 targetWorldPosition, Vector2? targetGridPosition = null)
+    internal bool ExecuteMovement(Vector3 targetWorldPosition, Vector2? targetGridPosition = null)
     {
         var screenPos = _gameController.IngameState.Camera.WorldToScreen(targetWorldPosition);
         if (screenPos == Vector2.Zero) return false;
@@ -487,19 +504,19 @@ public class FollowManager
 
         if (DateTime.Now < _nextMovementInputAt) return true;
 
-        var dashSkill = targetGridPosition.HasValue
-            ? TryGetDashSkill(_gameController.Player.GridPosNum, targetGridPosition.Value)
+        var movementSkill = targetGridPosition.HasValue
+            ? TryGetMovementSkill(_gameController.Player.GridPosNum, targetGridPosition.Value)
             : null;
 
         using (ExileCore.Input.InputManager.BlockUserMouseInput())
         {
             ExileCore.Input.InputManager.MoveMouse(screenPos);
-            _skillHandler.UseMovementSkill(dashSkill?.Name ?? MoveSkillName, true);
+            _skillHandler.UseMovementSkill(movementSkill?.Name ?? MoveSkillName, true);
         }
 
-        if (dashSkill != null)
+        if (movementSkill != null)
         {
-            LogDebug($"Using dash skill '{dashSkill.Name}' toward {targetWorldPosition}");
+            LogDebug($"Using movement skill '{movementSkill.Name}' toward {targetWorldPosition}");
         }
 
         var inputFrequency = FollowHer.Instance.Settings.Combat.Follow.InputFrequency.Value;
@@ -508,17 +525,28 @@ public class FollowManager
         return true;
     }
 
-    // Prefer an enabled movement skill (e.g. a leap/dash) over plain "Move" specifically when the
-    // target is a short-to-medium distance away AND there's no direct line of sight - i.e. likely
-    // blocked by an obstacle/door - mirroring AreWeThereYet's ShouldUseDash heuristic.
-    private ActiveSkill TryGetDashSkill(Vector2 playerGrid, Vector2 targetGrid)
+    // Prefer an enabled movement skill (e.g. a leap/dash) over plain "Move" instead of walking.
+    // Unlike Move (which the game pathfinds around obstacles for), a skill travels in a straight
+    // line and won't route around anything - so which setting applies depends on whether the
+    // straight line to the target is actually clear:
+    //   - PreferMovementSkillsForTravel: path is CLEAR -> use the skill just to travel faster,
+    //     since there's nothing to route around in the first place.
+    //   - DashEnabled: path is BLOCKED -> use the skill specifically to punch through/over the
+    //     obstacle (mirrors AreWeThereYet's ShouldUseDash heuristic). Never used when the path
+    //     needs routing around rather than punching through - Move handles that case instead.
+    private ActiveSkill TryGetMovementSkill(Vector2 playerGrid, Vector2 targetGrid)
     {
-        if (!FollowHer.Instance.Settings.Combat.Follow.DashEnabled) return null;
+        var settings = FollowHer.Instance.Settings.Combat.Follow;
+        if (!settings.DashEnabled && !settings.PreferMovementSkillsForTravel) return null;
 
         var distance = Vector2.Distance(playerGrid, targetGrid);
         if (distance < DashMinGridDistance || distance > DashMaxGridDistance) return null;
 
-        if (HasClearLineOfSight(playerGrid, targetGrid)) return null;
+        var hasClearLineOfSight = HasClearLineOfSight(playerGrid, targetGrid);
+        var wantsSkill = (settings.PreferMovementSkillsForTravel && hasClearLineOfSight) ||
+                          (settings.DashEnabled && !hasClearLineOfSight);
+
+        if (!wantsSkill) return null;
 
         return FollowHer.Instance.Settings.Combat.MovementSkills.Content
             .FirstOrDefault(s => s.Enabled && s.Name != MoveSkillName && _skillMonitor.CanUseSkill(s));
@@ -539,12 +567,18 @@ public class FollowManager
         evt.Graphics.DrawLine(playerScreen, targetScreen, visual.TaskLineWidth.Value, visual.TaskLineColor.Value);
     }
 
-    private void LogDebug(string message)
+    internal void LogDebug(string message)
     {
         if (FollowHer.Instance.Settings.Combat.Follow.Debug.ShowDetailedDebug)
         {
             DebugWindow.LogMsg($"[Follow] {message}");
         }
+    }
+
+    public void Dispose()
+    {
+        EventBus.Instance.Unsubscribe<RenderEvent>(HandleRender);
+        _lineOfSight.Dispose();
     }
 
     public void Reset(AreaInstance newArea)
@@ -573,5 +607,10 @@ public class FollowManager
         _nextTpActionAt = DateTime.MinValue;
         _nextMovementInputAt = DateTime.MinValue;
         _lastMoveTargetWorld = null;
+
+        foreach (var task in _tasks)
+        {
+            task.Reset();
+        }
     }
 }
