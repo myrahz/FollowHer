@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "exileapi": {
+      "command": "dotnet",
+      "args": ["run", "--project", "C:\\Users\\hugoc\\Documents\\ExileApiMcp"],
+      "env": {
+        "BRIDGE_DIR": "D:\\Funny Tools\\PoE\\310League\\ph 323\\PoeHelper_231124\\PoeHelper\\claude-bridge"
+      }
+    }
+  }
+}

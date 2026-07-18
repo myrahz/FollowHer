@@ -203,6 +203,9 @@ public class CombatSettings
 
         public ToggleNode CloseFollow { get; set; } = new(true);
 
+        [Menu("Disable Movement In Town", "Don't follow the leader while standing in a town or hideout")]
+        public ToggleNode DisableMovementInTown { get; set; } = new(false);
+
         [Menu("Dash Enabled", "Use an enabled movement skill instead of walking specifically when the path to the target is blocked")]
         public ToggleNode DashEnabled { get; set; } = new(false);
 
@@ -240,6 +243,12 @@ public class CombatSettings
 
             [Menu("Quest Item Pickup Range", "Maximum distance to a quest item before walking to pick it up")]
             public RangeNode<int> QuestItemPickupRange { get; set; } = new(500, 50, 2000);
+
+            [Menu("Click Quest Objects", "Walk to and click nearby quest objects (levers, triggers, etc.) while following")]
+            public ToggleNode ClickQuestObjects { get; set; } = new(true);
+
+            [Menu("Quest Object Click Range", "Maximum distance to a quest object before walking to click it")]
+            public RangeNode<int> QuestObjectClickRange { get; set; } = new(300, 50, 2000);
         }
     }
 }

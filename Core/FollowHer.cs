@@ -59,6 +59,15 @@ namespace FollowHer
                     _fightingToggled = false;
                 };
 
+                // Follow > Enable is the persisted default state; the toggle key just flips a
+                // runtime override seeded from it, rather than being OR'd against it forever
+                // (which made the hotkey unable to ever turn movement off while Enable was on).
+                _movementToggled = Settings.Combat.Follow.Enable.Value;
+                Settings.Combat.Follow.Enable.OnValueChanged += (_, value) =>
+                {
+                    _movementToggled = value;
+                };
+
                 var routineSelector = new CombatRoutineSelector(GameController);
 
                 var availableRoutines = routineSelector.GetAvailableRoutines();
@@ -113,8 +122,9 @@ namespace FollowHer
         public override void AreaChange(AreaInstance area)
         {
             _isToggled = false;
-            _movementToggled = false;
             _fightingToggled = false;
+            // Movement's toggle state is intentionally left alone - following the leader through
+            // a zone transition is the whole point, so it must survive the transition itself.
             EventBus.Instance.Publish(new AreaChangeEvent { NewArea = area });
         }
 

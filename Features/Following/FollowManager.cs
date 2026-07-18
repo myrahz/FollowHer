@@ -26,6 +26,7 @@ public class FollowManager
     private const float FollowPortalApproachTolerance = 50f;
     private const int MaxFollowPortalAttempts = 10;
     private const int PortalClickCooldownMs = 2500;
+    private const int TpConfirmationTimeoutMs = 1500;
     private const int MaxPathSearchNodes = 20000;
     private const int PathSmoothingLookahead = 6;
     private const float PathRetargetThresholdGrid = 20f;
@@ -58,6 +59,7 @@ public class FollowManager
     private string _lastKnownLeaderZone = "";
     private DateTime _leaderZoneChangeTime = DateTime.MinValue;
     private DateTime _nextTpActionAt = DateTime.MinValue;
+    private DateTime? _tpButtonClickedAt;
 
     private DateTime _nextMovementInputAt = DateTime.MinValue;
     private Vector3? _lastMoveTargetWorld;
@@ -67,6 +69,7 @@ public class FollowManager
     private readonly List<IFollowTask> _tasks = new()
     {
         new QuestItemPickupTask(),
+        new QuestObjectClickTask(),
     };
 
     public FollowManager(GameController gameController, SkillHandler skillHandler, SkillMonitor skillMonitor)
@@ -92,6 +95,13 @@ public class FollowManager
 
         try
         {
+            var currentArea = _gameController.Area?.CurrentArea;
+            if (settings.DisableMovementInTown && (currentArea?.IsTown == true || currentArea?.IsHideout == true))
+            {
+                StopMovement();
+                return true;
+            }
+
             var taskContext = new FollowTaskContext(_gameController, player, this);
             foreach (var task in _tasks)
             {
@@ -324,6 +334,7 @@ public class FollowManager
         {
             _lastKnownLeaderZone = leaderPartyMember.ZoneName;
             _leaderZoneChangeTime = DateTime.Now;
+            _tpButtonClickedAt = null;
         }
 
         if (!IsLeaderZoneInfoReliable(leaderPartyMember, currentZone))
@@ -337,16 +348,7 @@ public class FollowManager
             ? GridToWorldPosition(_lastPathfindableLeaderGrid.Value.x, _lastPathfindableLeaderGrid.Value.y)
             : _gameController.Player.PosNum;
 
-        var portal = GetBestPortalLabel(leaderPartyMember.ZoneName, referencePosition);
-        if (portal != null)
-        {
-            LogDebug($"Found matching portal for zone '{leaderPartyMember.ZoneName}' - clicking");
-            ClickElement(portal.Label);
-            return true;
-        }
-
-        LogDebug($"No matching portal found for zone '{leaderPartyMember.ZoneName}' - falling back to party teleport button");
-        return TryTeleportToLeader(leaderPartyMember);
+        return TryTeleportToLeader(leaderPartyMember, referencePosition);
     }
 
     private bool IsLeaderZoneInfoReliable(PartyMemberInfo leaderPartyMember, string currentZone)
@@ -442,21 +444,55 @@ public class FollowManager
         return new Vector3(worldXy.X, worldXy.Y, z);
     }
 
-    private bool TryTeleportToLeader(PartyMemberInfo leaderPartyMember)
+    // Default path is teleport-to-player: click the party panel's TP button, then confirm the
+    // popup it opens. Only if that popup never shows up (TP unavailable/failed) do we fall back
+    // to hunting for the zone-transition portal near the leader's last reachable position.
+    private bool TryTeleportToLeader(PartyMemberInfo leaderPartyMember, Vector3 referencePosition)
     {
         if (DateTime.Now < _nextTpActionAt) return true;
 
         var confirmationButton = GetTpConfirmationButton();
         if (confirmationButton != null)
         {
+            LogDebug("Teleport confirmation window open - confirming");
             ClickElement(confirmationButton);
+            _tpButtonClickedAt = null;
             _nextTpActionAt = DateTime.Now.AddMilliseconds(500);
             return true;
         }
 
-        if (leaderPartyMember.TpButton == null) return false;
+        if (_tpButtonClickedAt.HasValue)
+        {
+            if (DateTime.Now - _tpButtonClickedAt.Value < TimeSpan.FromMilliseconds(TpConfirmationTimeoutMs))
+            {
+                // Already clicked TP, still waiting to see whether a confirmation window appears.
+                return true;
+            }
 
+            LogDebug("Teleport-to-player produced no confirmation window - falling back to the zone transition portal");
+            _tpButtonClickedAt = null;
+            return TryClickZoneTransitionPortal(leaderPartyMember.ZoneName, referencePosition);
+        }
+
+        if (leaderPartyMember.TpButton == null)
+        {
+            return TryClickZoneTransitionPortal(leaderPartyMember.ZoneName, referencePosition);
+        }
+
+        LogDebug("Clicking teleport-to-player button");
         ClickElement(leaderPartyMember.TpButton);
+        _tpButtonClickedAt = DateTime.Now;
+        _nextTpActionAt = DateTime.Now.AddMilliseconds(500);
+        return true;
+    }
+
+    private bool TryClickZoneTransitionPortal(string leaderZoneName, Vector3 referencePosition)
+    {
+        var portal = GetBestPortalLabel(leaderZoneName, referencePosition);
+        if (portal == null) return true;
+
+        LogDebug($"Found matching portal for zone '{leaderZoneName}' - clicking");
+        ClickElement(portal.Label);
         _nextTpActionAt = DateTime.Now.AddMilliseconds(500);
         return true;
     }
@@ -483,6 +519,17 @@ public class FollowManager
                         _gameController.Window.GetWindowRectangle().TopLeft.ToVector2Num();
 
         ExileCore.Input.SetCursorPos(position);
+        ExileCore.Input.Click(MouseButtons.Left);
+    }
+
+    // Same click mechanics as ClickElement, but for a raw world entity with no ground label -
+    // WorldToScreen already returns an absolute screen position, so no window-rect offset is added.
+    internal void ClickWorldPosition(Vector3 worldPosition)
+    {
+        var screenPos = _gameController.IngameState.Camera.WorldToScreen(worldPosition);
+        if (screenPos == Vector2.Zero) return;
+
+        ExileCore.Input.SetCursorPos(screenPos);
         ExileCore.Input.Click(MouseButtons.Left);
     }
 
@@ -605,6 +652,7 @@ public class FollowManager
         _lastKnownLeaderZone = "";
         _leaderZoneChangeTime = DateTime.MinValue;
         _nextTpActionAt = DateTime.MinValue;
+        _tpButtonClickedAt = null;
         _nextMovementInputAt = DateTime.MinValue;
         _lastMoveTargetWorld = null;
 
