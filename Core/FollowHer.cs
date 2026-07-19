@@ -1,11 +1,14 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Windows.Forms;
 using ExileCore;
+using ExileCore.PoEMemory;
 using ExileCore.PoEMemory.Components;
 using ExileCore.PoEMemory.Elements;
 using ExileCore.PoEMemory.MemoryObjects;
 using ExileCore.Shared.Enums;
+using ExileCore.Shared.Helpers;
 using FollowHer.Core.Combat;
 using FollowHer.Core.Events;
 using FollowHer.Core.Events.Events;
@@ -23,6 +26,7 @@ namespace FollowHer
         private bool _isToggled;
         private bool _movementToggled;
         private bool _fightingToggled;
+        private DateTime _nextResurrectClickAt = DateTime.MinValue;
 
         public bool MovementEnabled { get; private set; }
         public bool FightingEnabled { get; private set; }
@@ -134,6 +138,12 @@ namespace FollowHer
 
             try
             {
+                if (GameController.Player?.IsAlive == false)
+                {
+                    TryResurrectAtCheckpoint();
+                    return null;
+                }
+
                 if (Settings.PrecisionToggleKey.PressedOnce())
                 {
                     _isToggled = !_isToggled;
@@ -200,6 +210,30 @@ namespace FollowHer
             if (!Settings.Render.EnableRendering) return;
 
             EventBus.Instance.Publish(new RenderEvent(Graphics));
+        }
+
+        // Always resurrect at the checkpoint rather than in town - independent of the
+        // movement/fighting toggles, since a dead character can't do either anyway.
+        private void TryResurrectAtCheckpoint()
+        {
+            if (DateTime.Now < _nextResurrectClickAt) return;
+
+            var button = GameController.IngameState?.IngameUi?.ResurrectPanel?.ResurrectAtCheckpoint;
+            if (button is not { IsVisible: true }) return;
+
+            ClickElement(button);
+            _nextResurrectClickAt = DateTime.Now.AddMilliseconds(1000);
+        }
+
+        private void ClickElement(Element element)
+        {
+            if (element == null) return;
+
+            var position = element.GetClientRect().ClickRandomNum(5, 3) +
+                            GameController.Window.GetWindowRectangle().TopLeft.ToVector2Num();
+
+            Input.SetCursorPos(position);
+            Input.Click(MouseButtons.Left);
         }
 
         private bool ShouldProcess()

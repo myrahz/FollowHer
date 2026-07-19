@@ -206,11 +206,14 @@ public class CombatSettings
         [Menu("Disable Movement In Town", "Don't follow the leader while standing in a town or hideout")]
         public ToggleNode DisableMovementInTown { get; set; } = new(false);
 
-        [Menu("Dash Enabled", "Use an enabled movement skill instead of walking specifically when the path to the target is blocked")]
+        [Menu("Dash Enabled", "Use an enabled blink-type movement skill (travels through obstacles, e.g. Frostblink/FlameDash/LightningWarp/BlinkArrow) to punch through a blocked path instead of walking")]
         public ToggleNode DashEnabled { get; set; } = new(false);
 
-        [Menu("Prefer Movement Skills For Travel", "Always use an enabled movement skill instead of walking when in range, even with a clear path - not just to get through obstacles")]
+        [Menu("Prefer Movement Skills For Travel", "Use an enabled ground-dash movement skill (collides with obstacles, e.g. Shield Charge/Whirling Blades) instead of walking when the path is already clear - never used to punch through something blocked")]
         public ToggleNode PreferMovementSkillsForTravel { get; set; } = new(false);
+
+        [Menu("Movement Skill Clearance Margin", "Grid cells of clearance required on each side of a ground-dash skill's travel line before it's used (accounts for character hitbox width)")]
+        public RangeNode<float> MovementSkillClearanceMargin { get; set; } = new(1.5f, 0.5f, 3f);
 
         [Menu("Input Frequency (ms)", "Minimum delay between successive movement inputs")]
         public RangeNode<int> InputFrequency { get; set; } = new(50, 1, 100);
@@ -238,6 +241,9 @@ public class CombatSettings
         [Submenu(CollapsedByDefault = true)]
         public class FollowTaskSettings
         {
+            [Menu("Leader Proximity Range", "The leader must be within this distance of a quest item/object for either task to trigger")]
+            public RangeNode<int> LeaderProximityRange { get; set; } = new(300, 50, 2000);
+
             [Menu("Pick Up Quest Items", "Walk to and pick up nearby quest items while following")]
             public ToggleNode PickUpQuestItems { get; set; } = new(true);
 

@@ -38,6 +38,12 @@ public class QuestObjectClickTask : IFollowTask
         var distance = Vector3.Distance(context.Player.PosNum, questObject.PosNum);
         if (distance >= clickRange) return false;
 
+        // Only interact with this object if the leader is actually near it - otherwise the
+        // follower would wander off toward unrelated levers/triggers the leader isn't using.
+        if (context.LeaderEntity == null) return false;
+        var leaderProximityRange = FollowHer.Instance.Settings.Combat.Follow.Tasks.LeaderProximityRange.Value;
+        if (Vector3.Distance(context.LeaderEntity.PosNum, questObject.PosNum) > leaderProximityRange) return false;
+
         if (_currentObjectAddress != questObject.Address)
         {
             _currentObjectAddress = questObject.Address;

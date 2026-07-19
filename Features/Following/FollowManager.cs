@@ -33,6 +33,9 @@ public class FollowManager
     private const int MinPathRecomputeIntervalMs = 400;
     private const float DashMinGridDistance = 30f;
     private const float DashMaxGridDistance = 150f;
+    private const int PursuitModeSwitchCooldownMs = 500;
+
+    private enum PursuitMode { Direct, Pathfind }
 
     private readonly GameController _gameController;
     private readonly SkillHandler _skillHandler;
@@ -63,6 +66,11 @@ public class FollowManager
 
     private DateTime _nextMovementInputAt = DateTime.MinValue;
     private Vector3? _lastMoveTargetWorld;
+
+    // Sticky direct-walk-vs-pathfind decision - a single noisy LOS raycast right at a
+    // corner/doorway edge shouldn't be able to flip the movement target every tick.
+    private PursuitMode? _pursuitMode;
+    private DateTime _pursuitModeLockedUntil = DateTime.MinValue;
 
     // Side-tasks checked (in order) before any follow/movement decision each tick - add new
     // IFollowTask implementations here to extend what Follow can do besides move/attack.
@@ -96,25 +104,29 @@ public class FollowManager
         try
         {
             var currentArea = _gameController.Area?.CurrentArea;
-            if (settings.DisableMovementInTown && (currentArea?.IsTown == true || currentArea?.IsHideout == true))
-            {
-                StopMovement();
-                return true;
-            }
+            // Disabling movement in town only blocks normal same-zone following - it must not
+            // block the leader-left-town case, so the zone-transition check below still runs.
+            var blockMovementInTown = settings.DisableMovementInTown &&
+                                       (currentArea?.IsTown == true || currentArea?.IsHideout == true);
 
-            var taskContext = new FollowTaskContext(_gameController, player, this);
-            foreach (var task in _tasks)
+            var leaderEntity = LeaderLocator.FindLeaderEntity(_gameController, leaderName);
+
+            if (!blockMovementInTown)
             {
-                if (task.TryExecute(taskContext))
+                var taskContext = new FollowTaskContext(_gameController, player, this, leaderEntity);
+                foreach (var task in _tasks)
                 {
-                    return true;
+                    if (task.TryExecute(taskContext))
+                    {
+                        return true;
+                    }
                 }
             }
 
             // Zone check first: if the party panel confirms the leader is in a different zone,
             // that fully owns the decision - direct/pathfinding movement only applies same-zone.
             var leaderPartyMember = PartyPanelScanner.GetLeaderPartyMember(_gameController, leaderName);
-            var currentZone = _gameController.Area?.CurrentArea?.DisplayName;
+            var currentZone = currentArea?.DisplayName;
 
             if (leaderPartyMember != null && !string.Equals(leaderPartyMember.ZoneName, currentZone, StringComparison.Ordinal))
             {
@@ -122,7 +134,13 @@ public class FollowManager
                 return TryFollowThroughZoneTransition(leaderPartyMember, currentZone);
             }
 
-            var leaderEntity = LeaderLocator.FindLeaderEntity(_gameController, leaderName);
+            if (blockMovementInTown)
+            {
+                // Leader is confirmed in this same town/hideout - movement is disabled here.
+                StopMovement();
+                return true;
+            }
+
             (int x, int y)? targetGrid;
 
             if (leaderEntity != null)
@@ -158,7 +176,8 @@ public class FollowManager
                     return true;
                 }
 
-                if (HasClearLineOfSight(player.GridPosNum, leaderEntity.GridPosNum))
+                var hasLineOfSight = HasClearLineOfSight(player.GridPosNum, leaderEntity.GridPosNum);
+                if (DeterminePursuitMode(hasLineOfSight) == PursuitMode.Direct)
                 {
                     return ExecuteMovement(leaderEntity.PosNum, leaderEntity.GridPosNum);
                 }
@@ -190,6 +209,21 @@ public class FollowManager
         {
             return false;
         }
+    }
+
+    // Only switches direct-walk <-> pathfind once the cooldown has elapsed, so a single noisy
+    // LOS reading right at a corner/doorway edge can't flip the movement target every tick.
+    private PursuitMode DeterminePursuitMode(bool hasClearLineOfSight)
+    {
+        var desiredMode = hasClearLineOfSight ? PursuitMode.Direct : PursuitMode.Pathfind;
+
+        if (_pursuitMode == null || (desiredMode != _pursuitMode.Value && DateTime.Now >= _pursuitModeLockedUntil))
+        {
+            _pursuitMode = desiredMode;
+            _pursuitModeLockedUntil = DateTime.Now.AddMilliseconds(PursuitModeSwitchCooldownMs);
+        }
+
+        return _pursuitMode.Value;
     }
 
     private bool TryFollowPathToTarget(Entity player, (int x, int y) target, CombatSettings.FollowSettings settings)
@@ -572,15 +606,17 @@ public class FollowManager
         return true;
     }
 
-    // Prefer an enabled movement skill (e.g. a leap/dash) over plain "Move" instead of walking.
-    // Unlike Move (which the game pathfinds around obstacles for), a skill travels in a straight
-    // line and won't route around anything - so which setting applies depends on whether the
-    // straight line to the target is actually clear:
-    //   - PreferMovementSkillsForTravel: path is CLEAR -> use the skill just to travel faster,
-    //     since there's nothing to route around in the first place.
-    //   - DashEnabled: path is BLOCKED -> use the skill specifically to punch through/over the
-    //     obstacle (mirrors AreWeThereYet's ShouldUseDash heuristic). Never used when the path
-    //     needs routing around rather than punching through - Move handles that case instead.
+    // Movement skills come in two mechanically different flavors, and each setting now maps onto
+    // exactly one of them (see ActiveSkill.TravelsThroughObstacles):
+    //   - DashEnabled -> blink-type skills (Frostblink/FlameDash/LightningWarp/BlinkArrow), which
+    //     ignore obstacles entirely and only need LOS - so they're only useful to punch through a
+    //     blocked path, never as a plain speed boost on ground that's already clear.
+    //   - PreferMovementSkillsForTravel -> ground-dash skills (Shield Charge/Whirling Blades),
+    //     which collide with obstacles like a moving hitbox - a thin center-line LOS pass isn't
+    //     enough to guarantee they won't clip a corner, so they additionally require a full
+    //     corridor clearance check (GridPathfinder.HasCorridorClearance) across the configured
+    //     hitbox margin, and are only used when the path is already clear - never to punch
+    //     through something, since they physically can't.
     private ActiveSkill TryGetMovementSkill(Vector2 playerGrid, Vector2 targetGrid)
     {
         var settings = FollowHer.Instance.Settings.Combat.Follow;
@@ -590,13 +626,28 @@ public class FollowManager
         if (distance < DashMinGridDistance || distance > DashMaxGridDistance) return null;
 
         var hasClearLineOfSight = HasClearLineOfSight(playerGrid, targetGrid);
-        var wantsSkill = (settings.PreferMovementSkillsForTravel && hasClearLineOfSight) ||
-                          (settings.DashEnabled && !hasClearLineOfSight);
 
-        if (!wantsSkill) return null;
+        if (settings.DashEnabled && !hasClearLineOfSight)
+        {
+            var blinkSkill = FollowHer.Instance.Settings.Combat.MovementSkills.Content
+                .FirstOrDefault(s => s.Enabled && s.Name != MoveSkillName && s.TravelsThroughObstacles &&
+                                      _skillMonitor.CanUseSkill(s));
+            if (blinkSkill != null) return blinkSkill;
+        }
 
-        return FollowHer.Instance.Settings.Combat.MovementSkills.Content
-            .FirstOrDefault(s => s.Enabled && s.Name != MoveSkillName && _skillMonitor.CanUseSkill(s));
+        if (settings.PreferMovementSkillsForTravel && hasClearLineOfSight)
+        {
+            var grid = _lineOfSight.GetGrid(LineOfSightDataType.Walkable);
+            if (grid != null && GridPathfinder.HasCorridorClearance(grid, playerGrid, targetGrid, settings.MovementSkillClearanceMargin))
+            {
+                var dashSkill = FollowHer.Instance.Settings.Combat.MovementSkills.Content
+                    .FirstOrDefault(s => s.Enabled && s.Name != MoveSkillName && !s.TravelsThroughObstacles &&
+                                          _skillMonitor.CanUseSkill(s));
+                if (dashSkill != null) return dashSkill;
+            }
+        }
+
+        return null;
     }
 
     private void HandleRender(RenderEvent evt)
@@ -655,6 +706,8 @@ public class FollowManager
         _tpButtonClickedAt = null;
         _nextMovementInputAt = DateTime.MinValue;
         _lastMoveTargetWorld = null;
+        _pursuitMode = null;
+        _pursuitModeLockedUntil = DateTime.MinValue;
 
         foreach (var task in _tasks)
         {

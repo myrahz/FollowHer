@@ -38,6 +38,12 @@ public class QuestItemPickupTask : IFollowTask
         var distance = Vector3.Distance(context.Player.PosNum, questItem.PosNum);
         if (distance >= pickupRange) return false;
 
+        // Only chase this item if the leader is actually near it - otherwise the follower would
+        // wander off toward stray quest items the leader has no intention of picking up.
+        if (context.LeaderEntity == null) return false;
+        var leaderProximityRange = FollowHer.Instance.Settings.Combat.Follow.Tasks.LeaderProximityRange.Value;
+        if (Vector3.Distance(context.LeaderEntity.PosNum, questItem.PosNum) > leaderProximityRange) return false;
+
         if (_currentItemAddress != questItem.Address)
         {
             _currentItemAddress = questItem.Address;

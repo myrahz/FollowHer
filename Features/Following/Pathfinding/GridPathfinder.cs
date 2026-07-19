@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Numerics;
 
 namespace FollowHer.Features.Following.Pathfinding;
 
@@ -133,5 +134,53 @@ public static class GridPathfinder
         }
 
         return null;
+    }
+
+    // Checks a band of parallel lines (centerline plus +/-marginCells offsets perpendicular to
+    // travel) rather than a single ray, so a skill that travels in a straight line and collides
+    // with obstacles (unlike Move, which routes around them) doesn't clip a corner with its
+    // hitbox. Deliberately uses this file's own IsWalkable/BlockingThreshold definition rather
+    // than LineOfSight's raycast, which has a different (looser) rule for value 5.
+    public static bool HasCorridorClearance(int[][] grid, Vector2 from, Vector2 to, float marginCells)
+    {
+        if (grid == null) return false;
+
+        var direction = to - from;
+        if (direction.LengthSquared() < 0.0001f) return true;
+
+        var normal = Vector2.Normalize(new Vector2(-direction.Y, direction.X));
+        var offsets = new[] { 0f, marginCells, -marginCells };
+
+        foreach (var offset in offsets)
+        {
+            var offsetVector = normal * offset;
+            if (!IsLineWalkable(grid, from + offsetVector, to + offsetVector)) return false;
+        }
+
+        return true;
+    }
+
+    private static bool IsLineWalkable(int[][] grid, Vector2 from, Vector2 to)
+    {
+        var dx = to.X - from.X;
+        var dy = to.Y - from.Y;
+        var steps = (int)Math.Ceiling(Math.Max(Math.Abs(dx), Math.Abs(dy)));
+
+        if (steps <= 0)
+        {
+            return IsWalkable(grid, (int)Math.Round(from.X), (int)Math.Round(from.Y));
+        }
+
+        var stepX = dx / steps;
+        var stepY = dy / steps;
+
+        for (var i = 0; i <= steps; i++)
+        {
+            var x = (int)Math.Round(from.X + stepX * i);
+            var y = (int)Math.Round(from.Y + stepY * i);
+            if (!IsWalkable(grid, x, y)) return false;
+        }
+
+        return true;
     }
 }

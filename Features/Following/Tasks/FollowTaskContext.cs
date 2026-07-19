@@ -10,11 +10,13 @@ public class FollowTaskContext
     public GameController GameController { get; }
     public Entity Player { get; }
     public FollowManager Manager { get; }
+    public Entity LeaderEntity { get; }
 
-    public FollowTaskContext(GameController gameController, Entity player, FollowManager manager)
+    public FollowTaskContext(GameController gameController, Entity player, FollowManager manager, Entity leaderEntity)
     {
         GameController = gameController;
         Player = player;
         Manager = manager;
+        LeaderEntity = leaderEntity;
     }
 }

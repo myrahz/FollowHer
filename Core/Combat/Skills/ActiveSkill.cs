@@ -37,6 +37,9 @@ namespace FollowHer.Core.Combat.Skills
 
         public ListNode LineOfSightType { get; set; } = new ListNode();
 
+        [Menu("Travels Through Obstacles", "Whether this skill ignores physical obstacles in its path (blink/teleport, e.g. Frostblink/FlameDash/LightningWarp/BlinkArrow) rather than colliding with them (ground dash, e.g. Shield Charge/Whirling Blades)")]
+        public ToggleNode TravelsThroughObstacles { get; set; } = new(false);
+
         public override string ToString() => $"{Name}";
     }
 }

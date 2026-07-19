@@ -24,8 +24,13 @@ namespace FollowHer.Core.Combat.Skills
         private readonly string[] MovementSkills = new[]
         {
             "Move", "Dash", "FlameDash", "FrostBlink", "LightningWarp", "ShieldCharge", "LeapSlam",
-            "WhirlingBlades"
+            "WhirlingBlades", "BlinkArrow"
         };
+
+        // Skills that teleport through obstacles rather than colliding with them - seeds the
+        // default for TravelsThroughObstacles when a movement skill is first discovered.
+        private static readonly HashSet<string> BlinkTypeMovementSkills =
+            new(StringComparer.OrdinalIgnoreCase) { "FrostBlink", "FlameDash", "LightningWarp", "BlinkArrow" };
 
         public void Initialize()
         {
@@ -83,7 +88,8 @@ namespace FollowHer.Core.Combat.Skills
                                     Enabled = new ToggleNode(true),
                                     UseClick = new ToggleNode(false),
                                     ExtraDelay = new RangeNode<int>(0, 0, 5000),
-                                    LineOfSightType = new ListNode()
+                                    LineOfSightType = new ListNode(),
+                                    TravelsThroughObstacles = new ToggleNode(BlinkTypeMovementSkills.Contains(skill.Name))
                                 };
                             }
 
