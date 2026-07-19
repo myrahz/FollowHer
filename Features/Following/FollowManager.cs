@@ -185,7 +185,7 @@ public class FollowManager
                 LogDebug("Leader visible but line of sight is blocked - pathfinding instead of walking straight at them");
             }
 
-            return TryFollowPathToTarget(player, targetGrid.Value, settings);
+            return TryFollowPathToTarget(player, targetGrid.Value, settings, leaderEntity != null);
         }
         catch (Exception ex)
         {
@@ -226,11 +226,21 @@ public class FollowManager
         return _pursuitMode.Value;
     }
 
-    private bool TryFollowPathToTarget(Entity player, (int x, int y) target, CombatSettings.FollowSettings settings)
+    private bool TryFollowPathToTarget(Entity player, (int x, int y) target, CombatSettings.FollowSettings settings, bool leaderVisible)
     {
         var start = RoundGrid(player.GridPosNum);
         if (start == target)
         {
+            if (!leaderVisible)
+            {
+                // Arrived at the leader's last known position but they're nowhere to be found -
+                // they most likely stepped through a transition right here (the party panel still
+                // reports the same zone, so this isn't a real zone change) - look for it instead
+                // of idling here forever.
+                _lastPathfindableLeaderGrid = target;
+                return TryFollowThroughRecentPortal(player.PosNum, target);
+            }
+
             StopMovement();
             return true;
         }
@@ -284,6 +294,13 @@ public class FollowManager
             }
 
             return ExecuteMovement(nodeWorld, new Vector2(node.x, node.y));
+        }
+
+        if (!leaderVisible)
+        {
+            // Same as above - reached the end of the path to the leader's last known position
+            // and they're still not visible, so look for a nearby transition instead of idling.
+            return TryFollowThroughRecentPortal(player.PosNum, target);
         }
 
         StopMovement();

@@ -166,11 +166,21 @@ namespace FollowHer
                     {
                         var leaderAnimation = actorComponent.Animation;
                         var leaderIsAttacking = actorComponent.isAttacking;
+                        // Movement skills can read as "attacking" via isAttacking, so every
+                        // movement-skill animation needs excluding here, not just Charge/LeapSlam:
+                        // the full Charge family covers Shield Charge, and Teleport is the shared
+                        // animation for Frostblink/FlameDash/LightningWarp/Blink Arrow.
                         shouldAttack = leaderIsAttacking &&
                                        !(leaderAnimation == AnimationE.LeapSlam ||
                                          leaderAnimation == AnimationE.LeapSlamOffhand ||
                                          leaderAnimation == AnimationE.Charge ||
-                                         leaderAnimation == AnimationE.ChargeEnd);
+                                         leaderAnimation == AnimationE.ChargeStart ||
+                                         leaderAnimation == AnimationE.ChargeEnd ||
+                                         leaderAnimation == AnimationE.ChargeEndAlt ||
+                                         leaderAnimation == AnimationE.ChargeEndLeft ||
+                                         leaderAnimation == AnimationE.ChargeEndRight ||
+                                         leaderAnimation == AnimationE.ChargeEnd180 ||
+                                         leaderAnimation == AnimationE.Teleport);
                     }
 
 

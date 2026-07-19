@@ -16,10 +16,13 @@ public static class LeaderLocator
 
         try
         {
+            var localPlayerAddress = gameController?.Player?.Address;
+
             return gameController?.EntityListWrapper?.ValidEntitiesByType?.GetValueOrDefault(EntityType.Player)?
-                .FirstOrDefault(x => string.Equals(x?.GetComponent<Player>()?.PlayerName,
-                    leaderName,
-                    StringComparison.OrdinalIgnoreCase));
+                .FirstOrDefault(x => x != null && x.Address != localPlayerAddress &&
+                    string.Equals(x.GetComponent<Player>()?.PlayerName,
+                        leaderName,
+                        StringComparison.OrdinalIgnoreCase));
         }
         catch (Exception ex)
         {
