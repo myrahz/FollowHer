@@ -138,9 +138,9 @@ namespace FollowHer.Core.Combat
             if (_inCombat) return;
             if (FollowManager.Update()) return;
 
-            if (FollowHer.Instance.Settings.Combat.MovementSkills.Content.Where(x => x.Enabled).Any())
+            if (FollowHer.Instance.Settings.Movement.MovementSkills.Content.Where(x => x.Enabled).Any())
             {
-                var movementSkill = FollowHer.Instance.Settings.Combat.MovementSkills.Content
+                var movementSkill = FollowHer.Instance.Settings.Movement.MovementSkills.Content
                     .FirstOrDefault(x => x.Enabled && SkillMonitor.CanUseSkill(x));
 
                 if (movementSkill != null)

@@ -24,7 +24,7 @@ public class QuestObjectClickTask : IFollowTask
 
     public bool TryExecute(FollowTaskContext context)
     {
-        if (!FollowHer.Instance.Settings.Combat.Follow.Tasks.ClickQuestObjects) return false;
+        if (!FollowHer.Instance.Settings.Movement.Tasks.ClickQuestObjects) return false;
 
         var questObject = FindNearestQuestObject(context.GameController, context.Player.PosNum);
         if (questObject == null)
@@ -34,14 +34,14 @@ public class QuestObjectClickTask : IFollowTask
             return false;
         }
 
-        var clickRange = FollowHer.Instance.Settings.Combat.Follow.Tasks.QuestObjectClickRange.Value;
+        var clickRange = FollowHer.Instance.Settings.Movement.Tasks.QuestObjectClickRange.Value;
         var distance = Vector3.Distance(context.Player.PosNum, questObject.PosNum);
         if (distance >= clickRange) return false;
 
         // Only interact with this object if the leader is actually near it - otherwise the
         // follower would wander off toward unrelated levers/triggers the leader isn't using.
         if (context.LeaderEntity == null) return false;
-        var leaderProximityRange = FollowHer.Instance.Settings.Combat.Follow.Tasks.LeaderProximityRange.Value;
+        var leaderProximityRange = FollowHer.Instance.Settings.Movement.Tasks.LeaderProximityRange.Value;
         if (Vector3.Distance(context.LeaderEntity.PosNum, questObject.PosNum) > leaderProximityRange) return false;
 
         if (_currentObjectAddress != questObject.Address)

@@ -138,12 +138,16 @@ namespace FollowHer.Core.Combat
         protected virtual void OnTargetChanged(EntityInfo oldTarget, EntityInfo newTarget) { }
         protected virtual void InitializeSkills() { }
 
+        // Fixed screen-space aiming tolerance - the removed CombatRange setting was carried by
+        // every routine but every one of them treated its actual value as inconsequential.
+        private const float CursorOnTargetTolerance = 50f;
+
         protected bool IsCursorOnTarget(EntityInfo target)
         {
             var cursorPos = new Vector2(GameController.IngameState.MousePosX, GameController.IngameState.MousePosY);
             var targetPos = GameController.IngameState.Camera.WorldToScreen(target.Pos);
 
-            return Vector2.Distance(cursorPos, targetPos) <= FollowHer.Instance.Settings.Combat.CombatRange.Value;
+            return Vector2.Distance(cursorPos, targetPos) <= CursorOnTargetTolerance;
         }
 
         protected bool ValidateExecutionState()

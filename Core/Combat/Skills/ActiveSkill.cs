@@ -40,6 +40,9 @@ namespace FollowHer.Core.Combat.Skills
         [Menu("Travels Through Obstacles", "Whether this skill ignores physical obstacles in its path (blink/teleport, e.g. Frostblink/FlameDash/LightningWarp/BlinkArrow) rather than colliding with them (ground dash, e.g. Shield Charge/Whirling Blades)")]
         public ToggleNode TravelsThroughObstacles { get; set; } = new(false);
 
+        [Menu("Requires Aiming", "Whether this skill needs the cursor placed on the target before casting - uncheck for buffs/supports/cries that fire immediately without targeting")]
+        public ToggleNode RequiresAiming { get; set; } = new(true);
+
         public override string ToString() => $"{Name}";
     }
 }

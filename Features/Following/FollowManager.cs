@@ -92,7 +92,7 @@ public class FollowManager
 
     public bool Update()
     {
-        var settings = FollowHer.Instance.Settings.Combat.Follow;
+        var settings = FollowHer.Instance.Settings.Movement;
         if (!settings.Enable) return false;
 
         var leaderName = FollowHer.Instance.Settings.LeaderName.Value;
@@ -226,7 +226,7 @@ public class FollowManager
         return _pursuitMode.Value;
     }
 
-    private bool TryFollowPathToTarget(Entity player, (int x, int y) target, CombatSettings.FollowSettings settings, bool leaderVisible)
+    private bool TryFollowPathToTarget(Entity player, (int x, int y) target, MovementSettings settings, bool leaderVisible)
     {
         var start = RoundGrid(player.GridPosNum);
         if (start == target)
@@ -399,7 +399,37 @@ public class FollowManager
             ? GridToWorldPosition(_lastPathfindableLeaderGrid.Value.x, _lastPathfindableLeaderGrid.Value.y)
             : _gameController.Player.PosNum;
 
+        // Prefer walking to and clicking the matching zone transition over teleporting - only
+        // teleport if it's too far to bother walking to, or we can't see one at all.
+        var playerPos = _gameController.Player.PosNum;
+        var portal = GetBestPortalLabel(leaderPartyMember.ZoneName, referencePosition);
+        var maxWalkDistance = FollowHer.Instance.Settings.Movement.ZoneTransitionMaxWalkDistance.Value;
+
+        if (portal != null && Vector3.Distance(playerPos, portal.ItemOnGround.PosNum) <= maxWalkDistance)
+        {
+            return TryWalkToZoneTransitionPortal(portal, playerPos);
+        }
+
+        LogDebug(portal == null
+            ? "No zone transition visible - falling back to teleport"
+            : "Zone transition is too far to walk to - falling back to teleport");
         return TryTeleportToLeader(leaderPartyMember, referencePosition);
+    }
+
+    private bool TryWalkToZoneTransitionPortal(LabelOnGround portal, Vector3 playerPos)
+    {
+        var distanceToPortal = Vector3.Distance(playerPos, portal.ItemOnGround.PosNum);
+        if (distanceToPortal > FollowPortalApproachTolerance)
+        {
+            return ExecuteMovement(portal.ItemOnGround.PosNum, portal.ItemOnGround.GridPosNum);
+        }
+
+        if (DateTime.Now < _nextPortalClickAt) return true;
+
+        LogDebug("Walking to and clicking the zone transition");
+        ClickElement(portal.Label);
+        _nextPortalClickAt = DateTime.Now.AddMilliseconds(PortalClickCooldownMs);
+        return true;
     }
 
     private bool IsLeaderZoneInfoReliable(PartyMemberInfo leaderPartyMember, string currentZone)
@@ -409,7 +439,7 @@ public class FollowManager
             return false;
 
         var timeSinceChange = DateTime.Now - _leaderZoneChangeTime;
-        var bufferMs = FollowHer.Instance.Settings.Combat.Follow.ZoneUpdateBuffer.Value;
+        var bufferMs = FollowHer.Instance.Settings.Movement.ZoneUpdateBuffer.Value;
         return timeSinceChange >= TimeSpan.FromMilliseconds(bufferMs);
     }
 
@@ -617,7 +647,7 @@ public class FollowManager
             LogDebug($"Using movement skill '{movementSkill.Name}' toward {targetWorldPosition}");
         }
 
-        var inputFrequency = FollowHer.Instance.Settings.Combat.Follow.InputFrequency.Value;
+        var inputFrequency = FollowHer.Instance.Settings.Movement.InputFrequency.Value;
         _nextMovementInputAt = DateTime.Now.AddMilliseconds(inputFrequency);
 
         return true;
@@ -636,7 +666,7 @@ public class FollowManager
     //     through something, since they physically can't.
     private ActiveSkill TryGetMovementSkill(Vector2 playerGrid, Vector2 targetGrid)
     {
-        var settings = FollowHer.Instance.Settings.Combat.Follow;
+        var settings = FollowHer.Instance.Settings.Movement;
         if (!settings.DashEnabled && !settings.PreferMovementSkillsForTravel) return null;
 
         var distance = Vector2.Distance(playerGrid, targetGrid);
@@ -646,7 +676,7 @@ public class FollowManager
 
         if (settings.DashEnabled && !hasClearLineOfSight)
         {
-            var blinkSkill = FollowHer.Instance.Settings.Combat.MovementSkills.Content
+            var blinkSkill = FollowHer.Instance.Settings.Movement.MovementSkills.Content
                 .FirstOrDefault(s => s.Enabled && s.Name != MoveSkillName && s.TravelsThroughObstacles &&
                                       _skillMonitor.CanUseSkill(s));
             if (blinkSkill != null) return blinkSkill;
@@ -657,7 +687,7 @@ public class FollowManager
             var grid = _lineOfSight.GetGrid(LineOfSightDataType.Walkable);
             if (grid != null && GridPathfinder.HasCorridorClearance(grid, playerGrid, targetGrid, settings.MovementSkillClearanceMargin))
             {
-                var dashSkill = FollowHer.Instance.Settings.Combat.MovementSkills.Content
+                var dashSkill = FollowHer.Instance.Settings.Movement.MovementSkills.Content
                     .FirstOrDefault(s => s.Enabled && s.Name != MoveSkillName && !s.TravelsThroughObstacles &&
                                           _skillMonitor.CanUseSkill(s));
                 if (dashSkill != null) return dashSkill;
@@ -669,7 +699,7 @@ public class FollowManager
 
     private void HandleRender(RenderEvent evt)
     {
-        var visual = FollowHer.Instance.Settings.Combat.Follow.Visual;
+        var visual = FollowHer.Instance.Settings.Movement.Visual;
         if (!visual.ShowFollowPath || _lastMoveTargetWorld == null) return;
 
         var player = _gameController.Player;
@@ -684,7 +714,7 @@ public class FollowManager
 
     internal void LogDebug(string message)
     {
-        if (FollowHer.Instance.Settings.Combat.Follow.Debug.ShowDetailedDebug)
+        if (FollowHer.Instance.Settings.Movement.Debug.ShowDetailedDebug)
         {
             DebugWindow.LogMsg($"[Follow] {message}");
         }

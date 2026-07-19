@@ -23,7 +23,7 @@ public class QuestItemPickupTask : IFollowTask
 
     public bool TryExecute(FollowTaskContext context)
     {
-        if (!FollowHer.Instance.Settings.Combat.Follow.Tasks.PickUpQuestItems) return false;
+        if (!FollowHer.Instance.Settings.Movement.Tasks.PickUpQuestItems) return false;
         if (context.GameController.Area?.CurrentArea?.IsHideout == true) return false;
 
         var questItem = FindNearestQuestItem(context.GameController, context.Player.PosNum);
@@ -34,14 +34,14 @@ public class QuestItemPickupTask : IFollowTask
             return false;
         }
 
-        var pickupRange = FollowHer.Instance.Settings.Combat.Follow.Tasks.QuestItemPickupRange.Value;
+        var pickupRange = FollowHer.Instance.Settings.Movement.Tasks.QuestItemPickupRange.Value;
         var distance = Vector3.Distance(context.Player.PosNum, questItem.PosNum);
         if (distance >= pickupRange) return false;
 
         // Only chase this item if the leader is actually near it - otherwise the follower would
         // wander off toward stray quest items the leader has no intention of picking up.
         if (context.LeaderEntity == null) return false;
-        var leaderProximityRange = FollowHer.Instance.Settings.Combat.Follow.Tasks.LeaderProximityRange.Value;
+        var leaderProximityRange = FollowHer.Instance.Settings.Movement.Tasks.LeaderProximityRange.Value;
         if (Vector3.Distance(context.LeaderEntity.PosNum, questItem.PosNum) > leaderProximityRange) return false;
 
         if (_currentItemAddress != questItem.Address)

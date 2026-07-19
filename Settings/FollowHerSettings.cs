@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
@@ -7,6 +7,7 @@ using ExileCore.PoEMemory.MemoryObjects;
 using ExileCore.Shared.Attributes;
 using ExileCore.Shared.Interfaces;
 using ExileCore.Shared.Nodes;
+using FollowHer.Core.Combat.Rules;
 using FollowHer.Core.Combat.Skills;
 using Newtonsoft.Json;
 
@@ -15,74 +16,121 @@ namespace FollowHer.Settings;
 public class FollowHerSettings : ISettings
 {
     public ToggleNode Enable { get; set; } = new(false);
-    public ToggleNode UseTerrainTargeting { get; set; } = new(true);
     public TextNode LeaderName { get; set; } = new("");
-    public ToggleNode AttackWhenLeaderIsAttacking { get; set; } = new(true);
-    public RangeNode<int> DistanceToLeaderToAttack { get; set; } =  new(40, 20, 200);
+
+    public HotkeySettings Hotkeys { get; set; } = new();
+    public MovementSettings Movement { get; set; } = new();
+    public CombatSettings Combat { get; set; } = new();
+    public TargetingSettings Targeting { get; set; } = new();
+    public RenderSettings Render { get; set; } = new();
+}
+
+[Submenu(CollapsedByDefault = true)]
+public class HotkeySettings
+{
     public HotkeyNode PrecisionKey { get; set; } = new(Keys.None);
     public HotkeyNode PrecisionToggleKey { get; set; } = new(Keys.None);
 
-    [Menu("Movement Toggle Key", "Toggles following the leader on/off, independent of the Combat > Follow > Enable setting")]
+    [Menu("Movement Toggle Key", "Toggles following the leader on/off, independent of the Movement > Enable setting")]
     public HotkeyNode MovementToggleKey { get; set; } = new(Keys.None);
 
     [Menu("Fighting Toggle Key", "Toggles attacking on/off, in addition to the Precision toggle key/hotkey")]
     public HotkeyNode FightingToggleKey { get; set; } = new(Keys.None);
-
-    public RenderSettings Render { get; set; } = new();
-    public TargetingSettings Targeting { get; set; } = new();
-    public CombatSettings Combat { get; set; } = new();
 }
 
 [Submenu(CollapsedByDefault = true)]
-public class RenderSettings
+public class MovementSettings
 {
-    public ToggleNode EnableRendering { get; set; } = new(true);
-    public ToggleNode ShowDebugInfo { get; set; } = new(false);
-    public ToggleNode ShowTerrainDebug { get; set; } = new(false);
-    public ToggleNode ShowWalkableDebug { get; set; } = new(false);
+    public ToggleNode Enable { get; set; } = new(true);
+    public RangeNode<int> KeepWithinDistance { get; set; } = new(200, 10, 1000);
+    public RangeNode<int> TransitionDistance { get; set; } = new(500, 100, 5000);
 
-    public TargetVisualsSettings TargetVisuals { get; set; } = new();
-    public UISettings Interface { get; set; } = new();
-    public CursorSettings Cursor { get; set; } = new();
+    [Menu("Zone Update Buffer (ms)")]
+    public RangeNode<int> ZoneUpdateBuffer { get; set; } = new(1000, 500, 5000);
+
+    [Menu("Zone Transition Max Walk Distance", "Prefer walking to and clicking the matching zone transition over teleporting to the leader - only teleport if the transition is farther than this or isn't visible at all")]
+    public RangeNode<int> ZoneTransitionMaxWalkDistance { get; set; } = new(300, 50, 2000);
+
+    public ToggleNode CloseFollow { get; set; } = new(true);
+
+    [Menu("Disable Movement In Town", "Don't follow the leader while standing in a town or hideout")]
+    public ToggleNode DisableMovementInTown { get; set; } = new(false);
+
+    [Menu("Dash Enabled", "Use an enabled blink-type movement skill (travels through obstacles, e.g. Frostblink/FlameDash/LightningWarp/BlinkArrow) to punch through a blocked path instead of walking")]
+    public ToggleNode DashEnabled { get; set; } = new(false);
+
+    [Menu("Prefer Movement Skills For Travel", "Use an enabled ground-dash movement skill (collides with obstacles, e.g. Shield Charge/Whirling Blades) instead of walking when the path is already clear - never used to punch through something blocked")]
+    public ToggleNode PreferMovementSkillsForTravel { get; set; } = new(false);
+
+    [Menu("Movement Skill Clearance Margin", "Grid cells of clearance required on each side of a ground-dash skill's travel line before it's used (accounts for character hitbox width)")]
+    public RangeNode<float> MovementSkillClearanceMargin { get; set; } = new(1.5f, 0.5f, 3f);
+
+    [Menu("Input Frequency (ms)", "Minimum delay between successive movement inputs")]
+    public RangeNode<int> InputFrequency { get; set; } = new(50, 1, 100);
+
+    public ToggleNode EnablePathfindingFallback { get; set; } = new(true);
+
+    public ContentNode<ActiveSkill> MovementSkills { get; set; } = new ContentNode<ActiveSkill>()
+    {
+        EnableItemCollapsing = true,
+        EnableControls = false,
+    };
+
+    public FollowVisualSettings Visual { get; set; } = new();
+    public FollowDebugSettings Debug { get; set; } = new();
+    public FollowTaskSettings Tasks { get; set; } = new();
 
     [Submenu(CollapsedByDefault = false)]
-    public class TargetVisualsSettings
+    public class FollowVisualSettings
     {
-        public ToggleNode ShowTargetHighlight { get; set; } = new(true);
-        public ColorNode TargetHighlightColor { get; set; } = new ColorNode((uint)Color.FromArgb(180, 255, 165, 0).ToArgb());
-        public RangeNode<float> HighlightThickness { get; set; } = new(2f, 1f, 5f);
-        public ToggleNode ShowTargetHealth { get; set; } = new(true);
-        public ColorNode HealthTextColor { get; set; } = new ColorNode((uint)Color.FromArgb(255, 255, 255, 255).ToArgb());
+        public ToggleNode ShowFollowPath { get; set; } = new(true);
+        public ColorNode TaskLineColor { get; set; } = new ColorNode((uint)Color.FromArgb(200, 0, 200, 255).ToArgb());
+        public RangeNode<float> TaskLineWidth { get; set; } = new(2f, 1f, 5f);
     }
 
     [Submenu(CollapsedByDefault = true)]
-    public class UISettings
+    public class FollowDebugSettings
     {
-        public ToggleNode EnableWithFullscreenUI { get; set; } = new(false);
-        public ToggleNode EnableWithLeftPanel { get; set; } = new(false);
-        public ToggleNode EnableWithRightPanel { get; set; } = new(false);
-
-        public SafeZoneSettings SafeZone { get; set; } = new();
-
-        [Submenu(CollapsedByDefault = true)]
-        public class SafeZoneSettings
-        {
-            public RangeNode<float> LeftMargin { get; set; } = new(2f, 0f, 50f);
-            public RangeNode<float> RightMargin { get; set; } = new(3f, 0f, 50f);
-            public RangeNode<float> TopMargin { get; set; } = new(8f, 0f, 50f);
-            public RangeNode<float> BottomMargin { get; set; } = new(15f, 0f, 50f);
-        }
+        public ToggleNode ShowDetailedDebug { get; set; } = new(false);
     }
 
     [Submenu(CollapsedByDefault = true)]
-    public class CursorSettings
+    public class FollowTaskSettings
     {
-        public RangeNode<int> TargetingRadius { get; set; } = new(10, 1, 100);
-        public ToggleNode EnableRandomization { get; set; } = new(false);
-        public RangeNode<float> RandomizationFactor { get; set; } = new(0.5f, 0.1f, 1.0f);
-        public ToggleNode LimitCursorRange { get; set; } = new(false);
-        public RangeNode<int> MaxCursorRange { get; set; } = new(300, 50, 1000);
+        [Menu("Leader Proximity Range", "The leader must be within this distance of a quest item/object for either task to trigger")]
+        public RangeNode<int> LeaderProximityRange { get; set; } = new(300, 50, 2000);
+
+        [Menu("Pick Up Quest Items", "Walk to and pick up nearby quest items while following")]
+        public ToggleNode PickUpQuestItems { get; set; } = new(true);
+
+        [Menu("Quest Item Pickup Range", "Maximum distance to a quest item before walking to pick it up")]
+        public RangeNode<int> QuestItemPickupRange { get; set; } = new(500, 50, 2000);
+
+        [Menu("Click Quest Objects", "Walk to and click nearby quest objects (levers, triggers, etc.) while following")]
+        public ToggleNode ClickQuestObjects { get; set; } = new(true);
+
+        [Menu("Quest Object Click Range", "Maximum distance to a quest object before walking to click it")]
+        public RangeNode<int> QuestObjectClickRange { get; set; } = new(300, 50, 2000);
     }
+}
+
+[Submenu(CollapsedByDefault = true)]
+public class CombatSettings
+{
+    public ToggleNode AttackWhenLeaderIsAttacking { get; set; } = new(true);
+    public RangeNode<int> DistanceToLeaderToAttack { get; set; } = new(40, 20, 200);
+
+    public ContentNode<ActiveSkill> Skills { get; set; } = new ContentNode<ActiveSkill>()
+    {
+        EnableItemCollapsing = true,
+        EnableControls = false,
+    };
+
+    // Plain fields (not properties) so ExileCore's settings auto-renderer skips them entirely -
+    // the rule/profile editor (Features/Rendering/CombatRuleEditor.cs) renders these itself via
+    // FollowHer.DrawSettings(), the same technique ReAgent uses for its own rule data.
+    public Dictionary<string, CombatRuleProfile> Profiles = new();
+    public string ActiveProfile = "";
 }
 
 [Submenu(CollapsedByDefault = true)]
@@ -172,89 +220,53 @@ public class TargetingSettings
 }
 
 [Submenu(CollapsedByDefault = true)]
-public class CombatSettings
+public class RenderSettings
 {
-    public ToggleNode EnableCombatMode { get; set; } = new(true);
-    public RangeNode<float> CombatRange { get; set; } = new(50f, 1f, 1000f);
-    public ListNode AvailableStrategies { get; set; } = new ListNode();
-    public ContentNode<ActiveSkill> Skills { get; set; } = new ContentNode<ActiveSkill>()
-    {
-        EnableItemCollapsing = true,
-        EnableControls = false,
-    };
+    public ToggleNode EnableRendering { get; set; } = new(true);
+    public ToggleNode ShowDebugInfo { get; set; } = new(false);
+    public ToggleNode ShowTerrainDebug { get; set; } = new(false);
+    public ToggleNode ShowWalkableDebug { get; set; } = new(false);
 
-    public ContentNode<ActiveSkill> MovementSkills { get; set; } = new ContentNode<ActiveSkill>()
-    {
-        EnableItemCollapsing = true,
-        EnableControls = false,
-    };
+    public TargetVisualsSettings TargetVisuals { get; set; } = new();
+    public UISettings Interface { get; set; } = new();
+    public CursorSettings Cursor { get; set; } = new();
 
-    public FollowSettings Follow { get; set; } = new();
+    [Submenu(CollapsedByDefault = false)]
+    public class TargetVisualsSettings
+    {
+        public ToggleNode ShowTargetHighlight { get; set; } = new(true);
+        public ColorNode TargetHighlightColor { get; set; } = new ColorNode((uint)Color.FromArgb(180, 255, 165, 0).ToArgb());
+        public RangeNode<float> HighlightThickness { get; set; } = new(2f, 1f, 5f);
+        public ToggleNode ShowTargetHealth { get; set; } = new(true);
+        public ColorNode HealthTextColor { get; set; } = new ColorNode((uint)Color.FromArgb(255, 255, 255, 255).ToArgb());
+    }
 
     [Submenu(CollapsedByDefault = true)]
-    public class FollowSettings
+    public class UISettings
     {
-        public ToggleNode Enable { get; set; } = new(true);
-        public RangeNode<int> KeepWithinDistance { get; set; } = new(200, 10, 1000);
-        public RangeNode<int> TransitionDistance { get; set; } = new(500, 100, 5000);
+        public ToggleNode EnableWithFullscreenUI { get; set; } = new(false);
+        public ToggleNode EnableWithLeftPanel { get; set; } = new(false);
+        public ToggleNode EnableWithRightPanel { get; set; } = new(false);
 
-        [Menu("Zone Update Buffer (ms)")]
-        public RangeNode<int> ZoneUpdateBuffer { get; set; } = new(1000, 500, 5000);
-
-        public ToggleNode CloseFollow { get; set; } = new(true);
-
-        [Menu("Disable Movement In Town", "Don't follow the leader while standing in a town or hideout")]
-        public ToggleNode DisableMovementInTown { get; set; } = new(false);
-
-        [Menu("Dash Enabled", "Use an enabled blink-type movement skill (travels through obstacles, e.g. Frostblink/FlameDash/LightningWarp/BlinkArrow) to punch through a blocked path instead of walking")]
-        public ToggleNode DashEnabled { get; set; } = new(false);
-
-        [Menu("Prefer Movement Skills For Travel", "Use an enabled ground-dash movement skill (collides with obstacles, e.g. Shield Charge/Whirling Blades) instead of walking when the path is already clear - never used to punch through something blocked")]
-        public ToggleNode PreferMovementSkillsForTravel { get; set; } = new(false);
-
-        [Menu("Movement Skill Clearance Margin", "Grid cells of clearance required on each side of a ground-dash skill's travel line before it's used (accounts for character hitbox width)")]
-        public RangeNode<float> MovementSkillClearanceMargin { get; set; } = new(1.5f, 0.5f, 3f);
-
-        [Menu("Input Frequency (ms)", "Minimum delay between successive movement inputs")]
-        public RangeNode<int> InputFrequency { get; set; } = new(50, 1, 100);
-
-        public ToggleNode EnablePathfindingFallback { get; set; } = new(true);
-
-        public FollowVisualSettings Visual { get; set; } = new();
-        public FollowDebugSettings Debug { get; set; } = new();
-        public FollowTaskSettings Tasks { get; set; } = new();
-
-        [Submenu(CollapsedByDefault = false)]
-        public class FollowVisualSettings
-        {
-            public ToggleNode ShowFollowPath { get; set; } = new(true);
-            public ColorNode TaskLineColor { get; set; } = new ColorNode((uint)Color.FromArgb(200, 0, 200, 255).ToArgb());
-            public RangeNode<float> TaskLineWidth { get; set; } = new(2f, 1f, 5f);
-        }
+        public SafeZoneSettings SafeZone { get; set; } = new();
 
         [Submenu(CollapsedByDefault = true)]
-        public class FollowDebugSettings
+        public class SafeZoneSettings
         {
-            public ToggleNode ShowDetailedDebug { get; set; } = new(false);
+            public RangeNode<float> LeftMargin { get; set; } = new(2f, 0f, 50f);
+            public RangeNode<float> RightMargin { get; set; } = new(3f, 0f, 50f);
+            public RangeNode<float> TopMargin { get; set; } = new(8f, 0f, 50f);
+            public RangeNode<float> BottomMargin { get; set; } = new(15f, 0f, 50f);
         }
+    }
 
-        [Submenu(CollapsedByDefault = true)]
-        public class FollowTaskSettings
-        {
-            [Menu("Leader Proximity Range", "The leader must be within this distance of a quest item/object for either task to trigger")]
-            public RangeNode<int> LeaderProximityRange { get; set; } = new(300, 50, 2000);
-
-            [Menu("Pick Up Quest Items", "Walk to and pick up nearby quest items while following")]
-            public ToggleNode PickUpQuestItems { get; set; } = new(true);
-
-            [Menu("Quest Item Pickup Range", "Maximum distance to a quest item before walking to pick it up")]
-            public RangeNode<int> QuestItemPickupRange { get; set; } = new(500, 50, 2000);
-
-            [Menu("Click Quest Objects", "Walk to and click nearby quest objects (levers, triggers, etc.) while following")]
-            public ToggleNode ClickQuestObjects { get; set; } = new(true);
-
-            [Menu("Quest Object Click Range", "Maximum distance to a quest object before walking to click it")]
-            public RangeNode<int> QuestObjectClickRange { get; set; } = new(300, 50, 2000);
-        }
+    [Submenu(CollapsedByDefault = true)]
+    public class CursorSettings
+    {
+        public RangeNode<int> TargetingRadius { get; set; } = new(10, 1, 100);
+        public ToggleNode EnableRandomization { get; set; } = new(false);
+        public RangeNode<float> RandomizationFactor { get; set; } = new(0.5f, 0.1f, 1.0f);
+        public ToggleNode LimitCursorRange { get; set; } = new(false);
+        public RangeNode<int> MaxCursorRange { get; set; } = new(300, 50, 1000);
     }
 }

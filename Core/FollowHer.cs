@@ -13,6 +13,7 @@ using FollowHer.Core.Combat;
 using FollowHer.Core.Events;
 using FollowHer.Core.Events.Events;
 using FollowHer.Features.Following;
+using FollowHer.Features.Rendering;
 using FollowHer.Settings;
 using ImGuiNET;
 
@@ -23,6 +24,7 @@ namespace FollowHer
         public static FollowHer Instance;
 
         private IRoutine _activeRoutine;
+        private readonly CombatRuleEditor _combatRuleEditor = new();
         private bool _isToggled;
         private bool _movementToggled;
         private bool _fightingToggled;
@@ -41,78 +43,46 @@ namespace FollowHer
         {
             try
             {
-                Input.RegisterKey(Settings.PrecisionKey);
-                Input.RegisterKey(Settings.PrecisionToggleKey);
-                Input.RegisterKey(Settings.MovementToggleKey);
-                Input.RegisterKey(Settings.FightingToggleKey);
+                Input.RegisterKey(Settings.Hotkeys.PrecisionKey);
+                Input.RegisterKey(Settings.Hotkeys.PrecisionToggleKey);
+                Input.RegisterKey(Settings.Hotkeys.MovementToggleKey);
+                Input.RegisterKey(Settings.Hotkeys.FightingToggleKey);
 
-                Settings.PrecisionKey.OnValueChanged += () => Input.RegisterKey(Settings.PrecisionKey);
-                Settings.PrecisionToggleKey.OnValueChanged += () =>
+                Settings.Hotkeys.PrecisionKey.OnValueChanged += () => Input.RegisterKey(Settings.Hotkeys.PrecisionKey);
+                Settings.Hotkeys.PrecisionToggleKey.OnValueChanged += () =>
                 {
-                    Input.RegisterKey(Settings.PrecisionToggleKey);
+                    Input.RegisterKey(Settings.Hotkeys.PrecisionToggleKey);
                     _isToggled = false;
                 };
-                Settings.MovementToggleKey.OnValueChanged += () =>
+                Settings.Hotkeys.MovementToggleKey.OnValueChanged += () =>
                 {
-                    Input.RegisterKey(Settings.MovementToggleKey);
+                    Input.RegisterKey(Settings.Hotkeys.MovementToggleKey);
                     _movementToggled = false;
                 };
-                Settings.FightingToggleKey.OnValueChanged += () =>
+                Settings.Hotkeys.FightingToggleKey.OnValueChanged += () =>
                 {
-                    Input.RegisterKey(Settings.FightingToggleKey);
+                    Input.RegisterKey(Settings.Hotkeys.FightingToggleKey);
                     _fightingToggled = false;
                 };
 
-                // Follow > Enable is the persisted default state; the toggle key just flips a
+                // Movement > Enable is the persisted default state; the toggle key just flips a
                 // runtime override seeded from it, rather than being OR'd against it forever
                 // (which made the hotkey unable to ever turn movement off while Enable was on).
-                _movementToggled = Settings.Combat.Follow.Enable.Value;
-                Settings.Combat.Follow.Enable.OnValueChanged += (_, value) =>
+                _movementToggled = Settings.Movement.Enable.Value;
+                Settings.Movement.Enable.OnValueChanged += (_, value) =>
                 {
                     _movementToggled = value;
                 };
 
-                var routineSelector = new CombatRoutineSelector(GameController);
-
-                var availableRoutines = routineSelector.GetAvailableRoutines();
-                Settings.Combat.AvailableStrategies.SetListValues(availableRoutines);
-
-                if (Settings.Combat.AvailableStrategies.Values.Count == 0)
+                // One routine instance for the whole plugin lifetime now - "which build to play"
+                // is just which named CombatRuleProfile is active (read fresh every tick by
+                // RuleBasedRoutine), not a whole different hardcoded routine class to swap in.
+                _activeRoutine = new RuleBasedRoutine(GameController);
+                if (!_activeRoutine.Initialize())
                 {
-                    DebugWindow.LogError($"[{Name}] No combat routines available");
+                    DebugWindow.LogError($"[{Name}] Failed to initialize combat routine");
                     return false;
                 }
-
-                try
-                {
-                    if (!string.IsNullOrEmpty(Settings.Combat.AvailableStrategies.Value))
-                    {
-                        _activeRoutine = routineSelector.GetRoutine();
-                        if (_activeRoutine == null)
-                        {
-                            DebugWindow.LogError($"[{Name}] Failed to create combat routine");
-                            return false;
-                        }
-                        if (!_activeRoutine.Initialize())
-                        {
-                            DebugWindow.LogError($"[{Name}] Failed to initialize combat routine");
-                            return false;
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    DebugWindow.LogError($"[{Name}] Failed to initialize combat routine: {ex.Message}");
-                    return false;
-                }
-
-                Settings.Combat.AvailableStrategies.OnValueSelected += (strategy) =>
-                {
-                    DebugWindow.LogMsg($"[{Name}] Selected strategy: {strategy}");
-                    _activeRoutine?.Dispose();
-                    _activeRoutine = routineSelector.GetRoutine();
-                    _activeRoutine?.Initialize();
-                };
 
                 return true;
             }
@@ -144,25 +114,25 @@ namespace FollowHer
                     return null;
                 }
 
-                if (Settings.PrecisionToggleKey.PressedOnce())
+                if (Settings.Hotkeys.PrecisionToggleKey.PressedOnce())
                 {
                     _isToggled = !_isToggled;
                 }
-                if (Settings.MovementToggleKey.PressedOnce())
+                if (Settings.Hotkeys.MovementToggleKey.PressedOnce())
                 {
                     _movementToggled = !_movementToggled;
                 }
-                if (Settings.FightingToggleKey.PressedOnce())
+                if (Settings.Hotkeys.FightingToggleKey.PressedOnce())
                 {
                     _fightingToggled = !_fightingToggled;
                 }
                 bool shouldAttack = false;
-                if (Settings.AttackWhenLeaderIsAttacking)
+                if (Settings.Combat.AttackWhenLeaderIsAttacking)
                 {
                     var leaderEntity = LeaderLocator.FindLeaderEntity(GameController, Settings.LeaderName.Value);
 
                     var actorComponent = leaderEntity?.GetComponent<Actor>();
-                    if (actorComponent != null && leaderEntity.DistancePlayer < Settings.DistanceToLeaderToAttack)
+                    if (actorComponent != null && leaderEntity.DistancePlayer < Settings.Combat.DistanceToLeaderToAttack)
                     {
                         var leaderAnimation = actorComponent.Animation;
                         var leaderIsAttacking = actorComponent.isAttacking;
@@ -189,8 +159,8 @@ namespace FollowHer
 
 
 
-                var combatActive = _isToggled || _fightingToggled || Input.GetKeyState(Settings.PrecisionKey) || shouldAttack;
-                var movementActive = Settings.Combat.Follow.Enable || _movementToggled;
+                var combatActive = _isToggled || _fightingToggled || Input.GetKeyState(Settings.Hotkeys.PrecisionKey) || shouldAttack;
+                var movementActive = Settings.Movement.Enable || _movementToggled;
                 var isActive = combatActive || movementActive;
 
                 MovementEnabled = movementActive;
@@ -220,6 +190,12 @@ namespace FollowHer
             if (!Settings.Render.EnableRendering) return;
 
             EventBus.Instance.Publish(new RenderEvent(Graphics));
+        }
+
+        public override void DrawSettings()
+        {
+            base.DrawSettings();
+            _combatRuleEditor.Draw(Settings.Combat);
         }
 
         // Always resurrect at the checkpoint rather than in town - independent of the

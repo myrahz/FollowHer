@@ -43,7 +43,7 @@ namespace FollowHer.Core.Combat.Skills
                 }
 
                 var existingMovementSkills = new Dictionary<string, ActiveSkill>();
-                foreach (var skill in FollowHer.Instance.Settings.Combat.MovementSkills.Content)
+                foreach (var skill in FollowHer.Instance.Settings.Movement.MovementSkills.Content)
                 {
                     existingMovementSkills[skill.Name] = skill;
                 }
@@ -159,10 +159,10 @@ namespace FollowHer.Core.Combat.Skills
                     FollowHer.Instance.Settings.Combat.Skills.Content.Add(skill);
                 }
 
-                FollowHer.Instance.Settings.Combat.MovementSkills.Content.Clear();
+                FollowHer.Instance.Settings.Movement.MovementSkills.Content.Clear();
                 foreach (var skill in _movementSkills.Values)
                 {
-                    FollowHer.Instance.Settings.Combat.MovementSkills.Content.Add(skill);
+                    FollowHer.Instance.Settings.Movement.MovementSkills.Content.Add(skill);
                 }
             }
             catch (Exception ex)
