@@ -725,9 +725,9 @@ public class FollowManager
             {
                 LogDebug("Movement skill: no terrain grid available yet - skipped");
             }
-            else if (!GridPathfinder.HasCorridorClearance(grid, playerGrid, targetGrid, settings.MovementSkillClearanceMargin))
+            else if (!GridPathfinder.HasCorridorClearance(grid, playerGrid, targetGrid, settings.MovementSkillClearanceMargin, out var failureReason))
             {
-                LogDebug("Movement skill: corridor clearance check failed - skipped");
+                LogDebug($"Movement skill: corridor clearance check failed ({failureReason}); player grid ({playerGrid.X:F1},{playerGrid.Y:F1}) -> target grid ({targetGrid.X:F1},{targetGrid.Y:F1}), margin={settings.MovementSkillClearanceMargin}");
             }
             else
             {

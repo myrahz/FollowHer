@@ -141,9 +141,17 @@ public static class GridPathfinder
     // with obstacles (unlike Move, which routes around them) doesn't clip a corner with its
     // hitbox. Deliberately uses this file's own IsWalkable/BlockingThreshold definition rather
     // than LineOfSight's raycast, which has a different (looser) rule for value 5.
-    public static bool HasCorridorClearance(int[][] grid, Vector2 from, Vector2 to, float marginCells)
+    public static bool HasCorridorClearance(int[][] grid, Vector2 from, Vector2 to, float marginCells) =>
+        HasCorridorClearance(grid, from, to, marginCells, out _);
+
+    public static bool HasCorridorClearance(int[][] grid, Vector2 from, Vector2 to, float marginCells, out string failureReason)
     {
-        if (grid == null) return false;
+        failureReason = null;
+        if (grid == null)
+        {
+            failureReason = "grid is null";
+            return false;
+        }
 
         var direction = to - from;
         if (direction.LengthSquared() < 0.0001f) return true;
@@ -154,21 +162,36 @@ public static class GridPathfinder
         foreach (var offset in offsets)
         {
             var offsetVector = normal * offset;
-            if (!IsLineWalkable(grid, from + offsetVector, to + offsetVector)) return false;
+            if (!IsLineWalkable(grid, from + offsetVector, to + offsetVector, out var blockX, out var blockY, out var blockValue))
+            {
+                failureReason = $"offset {offset:F1} blocked at grid ({blockX},{blockY}) value={blockValue}";
+                return false;
+            }
         }
 
         return true;
     }
 
-    private static bool IsLineWalkable(int[][] grid, Vector2 from, Vector2 to)
+    private static bool IsLineWalkable(int[][] grid, Vector2 from, Vector2 to, out int blockX, out int blockY, out int blockValue)
     {
+        blockX = 0;
+        blockY = 0;
+        blockValue = -1;
+
         var dx = to.X - from.X;
         var dy = to.Y - from.Y;
         var steps = (int)Math.Ceiling(Math.Max(Math.Abs(dx), Math.Abs(dy)));
 
         if (steps <= 0)
         {
-            return IsWalkable(grid, (int)Math.Round(from.X), (int)Math.Round(from.Y));
+            var x0 = (int)Math.Round(from.X);
+            var y0 = (int)Math.Round(from.Y);
+            if (IsWalkable(grid, x0, y0)) return true;
+
+            blockX = x0;
+            blockY = y0;
+            blockValue = InBounds(grid, x0, y0) ? grid[y0][x0] : -2;
+            return false;
         }
 
         var stepX = dx / steps;
@@ -178,7 +201,13 @@ public static class GridPathfinder
         {
             var x = (int)Math.Round(from.X + stepX * i);
             var y = (int)Math.Round(from.Y + stepY * i);
-            if (!IsWalkable(grid, x, y)) return false;
+            if (!IsWalkable(grid, x, y))
+            {
+                blockX = x;
+                blockY = y;
+                blockValue = InBounds(grid, x, y) ? grid[y][x] : -2;
+                return false;
+            }
         }
 
         return true;
