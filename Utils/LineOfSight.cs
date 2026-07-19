@@ -90,15 +90,19 @@ namespace FollowHer.Utils
                 }
                 else
                 {
+                    // Colors here are per-raw-value labels only, not a blocking/passable verdict -
+                    // see IsBlocking for the actual rule per data type. For Walkable specifically,
+                    // only 0 blocks (confirmed against Radar's own working pathfinder); 1-5 are all
+                    // passable despite the "obstacle"-sounding labels below.
                     color = value switch
                     {
-                        0 => new SharpDX.Color(0, 128, 0, 128),    // Walkable
-                        1 => new SharpDX.Color(0, 0, 128, 128),    // Low obstacle
-                        2 => new SharpDX.Color(255, 165, 0, 128),  // Medium obstacle
-                        3 => new SharpDX.Color(255, 0, 0, 128),    // High obstacle
-                        4 => new SharpDX.Color(128, 0, 128, 128),  // Blocking
-                        5 => new SharpDX.Color(0, 0, 0, 128),      // Special
-                        _ => new SharpDX.Color(128, 128, 128, 128) // Unknown
+                        0 => new SharpDX.Color(0, 128, 0, 128),    // value 0
+                        1 => new SharpDX.Color(0, 0, 128, 128),    // value 1
+                        2 => new SharpDX.Color(255, 165, 0, 128),  // value 2
+                        3 => new SharpDX.Color(255, 0, 0, 128),    // value 3
+                        4 => new SharpDX.Color(128, 0, 128, 128),  // value 4
+                        5 => new SharpDX.Color(0, 0, 0, 128),      // value 5
+                        _ => new SharpDX.Color(128, 128, 128, 128) // unknown
                     };
                 }
 
@@ -218,6 +222,24 @@ namespace FollowHer.Utils
             return CheckDiagonalLine(start, end, dx, dy, losType);
         }
 
+        // Only the Walkable layer (RawPathfindingData) has a confirmed encoding: verified against
+        // the Radar plugin's own working pathfinder (PathFinder.cs, constructed with pathable
+        // values {1,2,3,4,5}) reading the exact same raw source - value 0 is the only blocking
+        // value, everything else is passable. The Terrain layer (RawTerrainTargetingData, used
+        // for attack-skill targeting LOS) has no such confirmation either way, so it keeps the
+        // prior threshold rather than guessing.
+        private static bool IsBlocking(int value, LineOfSightDataType losType)
+        {
+            if (value < 0) return true; // out-of-bounds sentinel from GetValue
+
+            if (losType == LineOfSightDataType.Walkable)
+            {
+                return value == 0;
+            }
+
+            return value >= TARGET_LAYER_VALUE;
+        }
+
         private bool CheckVerticalLine(int x, int startY, int endY, LineOfSightDataType losType)
         {
             var step = Math.Sign(endY - startY);
@@ -230,8 +252,7 @@ namespace FollowHer.Utils
                 var terrainValue = GetValue(pos, losType);
                 _debugVisiblePoints.Add(pos);
 
-                if (terrainValue < TARGET_LAYER_VALUE) continue;
-                if (terrainValue <= TARGET_LAYER_VALUE) return false;
+                if (IsBlocking(terrainValue, losType)) return false;
             }
 
             return true;
@@ -249,8 +270,7 @@ namespace FollowHer.Utils
                 var terrainValue = GetValue(pos, losType);
                 _debugVisiblePoints.Add(pos);
 
-                if (terrainValue < TARGET_LAYER_VALUE) continue;
-                if (terrainValue <= TARGET_LAYER_VALUE) return false;
+                if (IsBlocking(terrainValue, losType)) return false;
             }
 
             return true;
@@ -283,8 +303,7 @@ namespace FollowHer.Utils
                     var terrainValue = GetValue(pos, losType);
                     _debugVisiblePoints.Add(pos);
 
-                    if (terrainValue < TARGET_LAYER_VALUE) continue;
-                    if (terrainValue <= TARGET_LAYER_VALUE) return false;
+                    if (IsBlocking(terrainValue, losType)) return false;
                 }
             }
             else
@@ -307,8 +326,7 @@ namespace FollowHer.Utils
                     var terrainValue = GetValue(pos, losType);
                     _debugVisiblePoints.Add(pos);
 
-                    if (terrainValue < TARGET_LAYER_VALUE) continue;
-                    if (terrainValue <= TARGET_LAYER_VALUE) return false;
+                    if (IsBlocking(terrainValue, losType)) return false;
                 }
             }
 

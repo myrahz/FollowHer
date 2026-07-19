@@ -6,10 +6,6 @@ namespace FollowHer.Features.Following.Pathfinding;
 
 public static class GridPathfinder
 {
-    // FollowHer's LineOfSight grid encodes 0=Walkable ... 3=High obstacle, 4=Blocking, 5=Special;
-    // existing LOS checks already treat >= 4 as blocking (see Utils/LineOfSight.TARGET_LAYER_VALUE).
-    private const int BlockingThreshold = 4;
-
     private class Node
     {
         public int X;
@@ -50,9 +46,13 @@ public static class GridPathfinder
         return true;
     }
 
+    // This grid is always the Walkable layer (RawPathfindingData) - every caller passes
+    // _lineOfSight.GetGrid(LineOfSightDataType.Walkable). Confirmed against Radar's own working
+    // pathfinder (PathFinder.cs, constructed with pathable values {1,2,3,4,5}) reading the exact
+    // same raw source: value 0 is the only blocking value, everything else is passable.
     private static bool IsWalkable(int[][] grid, int x, int y)
     {
-        return InBounds(grid, x, y) && grid[y][x] >= 0 && grid[y][x] < BlockingThreshold;
+        return InBounds(grid, x, y) && grid[y][x] != 0;
     }
 
     /// <summary>
@@ -139,8 +139,8 @@ public static class GridPathfinder
     // Checks a band of parallel lines (centerline plus +/-marginCells offsets perpendicular to
     // travel) rather than a single ray, so a skill that travels in a straight line and collides
     // with obstacles (unlike Move, which routes around them) doesn't clip a corner with its
-    // hitbox. Deliberately uses this file's own IsWalkable/BlockingThreshold definition rather
-    // than LineOfSight's raycast, which has a different (looser) rule for value 5.
+    // hitbox. Uses this file's own IsWalkable definition (confirmed against Radar's working
+    // pathfinder: only value 0 blocks on the Walkable grid).
     public static bool HasCorridorClearance(int[][] grid, Vector2 from, Vector2 to, float marginCells) =>
         HasCorridorClearance(grid, from, to, marginCells, out _);
 
