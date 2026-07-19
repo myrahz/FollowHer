@@ -373,6 +373,9 @@ public class FollowManager
         if (DateTime.Now < _nextPortalClickAt) return true;
 
         LogDebug("Found a transition near the leader's last reachable position - clicking it");
+        // Release any held movement input first - a still-held Move key/mouse button can swallow
+        // or override the click that follows.
+        StopMovement();
         ClickElement(portal.Label);
         _portalClickAttempts++;
         _nextPortalClickAt = DateTime.Now.AddMilliseconds(PortalClickCooldownMs);
@@ -427,6 +430,9 @@ public class FollowManager
         if (DateTime.Now < _nextPortalClickAt) return true;
 
         LogDebug("Walking to and clicking the zone transition");
+        // Release any held movement input first - a still-held Move key/mouse button can swallow
+        // or override the click that follows.
+        StopMovement();
         ClickElement(portal.Label);
         _nextPortalClickAt = DateTime.Now.AddMilliseconds(PortalClickCooldownMs);
         return true;
@@ -536,6 +542,7 @@ public class FollowManager
         if (confirmationButton != null)
         {
             LogDebug("Teleport confirmation window open - confirming");
+            StopMovement();
             ClickElement(confirmationButton);
             _tpButtonClickedAt = null;
             _nextTpActionAt = DateTime.Now.AddMilliseconds(500);
@@ -561,6 +568,7 @@ public class FollowManager
         }
 
         LogDebug("Clicking teleport-to-player button");
+        StopMovement();
         ClickElement(leaderPartyMember.TpButton);
         _tpButtonClickedAt = DateTime.Now;
         _nextTpActionAt = DateTime.Now.AddMilliseconds(500);
@@ -573,6 +581,7 @@ public class FollowManager
         if (portal == null) return true;
 
         LogDebug($"Found matching portal for zone '{leaderZoneName}' - clicking");
+        StopMovement();
         ClickElement(portal.Label);
         _nextTpActionAt = DateTime.Now.AddMilliseconds(500);
         return true;
