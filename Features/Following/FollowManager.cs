@@ -694,7 +694,11 @@ public class FollowManager
         // Compared in world units (like every other distance setting in this plugin), not grid
         // units, so it's directly comparable to what you see in-game rather than a hidden scale.
         var worldDistance = Vector2.Distance(playerGrid, targetGrid) * GridToWorldMultiplier;
-        if (worldDistance < settings.MovementSkillMinDistance || worldDistance > settings.MovementSkillMaxDistance) return null;
+        if (worldDistance < settings.MovementSkillMinDistance || worldDistance > settings.MovementSkillMaxDistance)
+        {
+            LogDebug($"Movement skill: distance {worldDistance:F0} outside [{settings.MovementSkillMinDistance},{settings.MovementSkillMaxDistance}] - skipped");
+            return null;
+        }
 
         var hasClearLineOfSight = HasClearLineOfSight(playerGrid, targetGrid);
 
@@ -704,17 +708,34 @@ public class FollowManager
                 .FirstOrDefault(s => s.Enabled && s.Name != MoveSkillName && s.TravelsThroughObstacles &&
                                       _skillMonitor.CanUseSkill(s));
             if (blinkSkill != null) return blinkSkill;
+            if (settings.DashEnabled)
+            {
+                LogDebug("Movement skill: DashEnabled path (LOS blocked) found no enabled/off-cooldown blink-type skill");
+            }
         }
 
-        if (settings.PreferMovementSkillsForTravel && hasClearLineOfSight)
+        if (settings.PreferMovementSkillsForTravel)
         {
+            // Gate on the corridor-clearance check alone, not also on hasClearLineOfSight - the
+            // two use different walkability rules (LineOfSight only blocks on grid value 4;
+            // GridPathfinder/HasCorridorClearance also blocks on 5, "Special" tiles), so requiring
+            // both could silently reject a corridor the clearance check would otherwise approve.
             var grid = _lineOfSight.GetGrid(LineOfSightDataType.Walkable);
-            if (grid != null && GridPathfinder.HasCorridorClearance(grid, playerGrid, targetGrid, settings.MovementSkillClearanceMargin))
+            if (grid == null)
+            {
+                LogDebug("Movement skill: no terrain grid available yet - skipped");
+            }
+            else if (!GridPathfinder.HasCorridorClearance(grid, playerGrid, targetGrid, settings.MovementSkillClearanceMargin))
+            {
+                LogDebug("Movement skill: corridor clearance check failed - skipped");
+            }
+            else
             {
                 var dashSkill = FollowHer.Instance.Settings.Movement.MovementSkills.Content
                     .FirstOrDefault(s => s.Enabled && s.Name != MoveSkillName && !s.TravelsThroughObstacles &&
                                           _skillMonitor.CanUseSkill(s));
                 if (dashSkill != null) return dashSkill;
+                LogDebug("Movement skill: corridor clear but no enabled/off-cooldown ground-dash skill found");
             }
         }
 
