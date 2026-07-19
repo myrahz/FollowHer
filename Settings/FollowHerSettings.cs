@@ -120,6 +120,9 @@ public class CombatSettings
     public ToggleNode AttackWhenLeaderIsAttacking { get; set; } = new(true);
     public RangeNode<int> DistanceToLeaderToAttack { get; set; } = new(40, 20, 200);
 
+    [Menu("Attack Grace Period (ms)", "Keep attacking for this long after the leader was last seen attacking, instead of requiring them to be attacking at that exact instant - smooths over the gaps between individual swings")]
+    public RangeNode<int> AttackGracePeriod { get; set; } = new(500, 0, 3000);
+
     public ContentNode<ActiveSkill> Skills { get; set; } = new ContentNode<ActiveSkill>()
     {
         EnableItemCollapsing = true,

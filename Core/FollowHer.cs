@@ -30,6 +30,7 @@ namespace FollowHer
         private bool _movementToggled;
         private bool _fightingToggled;
         private DateTime _nextResurrectClickAt = DateTime.MinValue;
+        private DateTime _lastLeaderAttackDetectedAt = DateTime.MinValue;
 
         public bool MovementEnabled { get; private set; }
         public bool FightingEnabled { get; private set; }
@@ -144,12 +145,11 @@ namespace FollowHer
                     if (actorComponent != null && leaderEntity.DistancePlayer < Settings.Combat.DistanceToLeaderToAttack)
                     {
                         var leaderAnimation = actorComponent.Animation;
-                        var leaderIsAttacking = actorComponent.isAttacking;
-                        // Movement skills can read as "attacking" via isAttacking, so every
-                        // movement-skill animation needs excluding here, not just Charge/LeapSlam:
-                        // the full Charge family covers Shield Charge, and Teleport is the shared
-                        // animation for Frostblink/FlameDash/LightningWarp/Blink Arrow.
-                        shouldAttack = leaderIsAttacking &&
+                        var leaderIsAttackingNow = actorComponent.isAttacking &&
+                                       // Movement skills can read as "attacking" via isAttacking, so every
+                                       // movement-skill animation needs excluding here, not just Charge/LeapSlam:
+                                       // the full Charge family covers Shield Charge, and Teleport is the shared
+                                       // animation for Frostblink/FlameDash/LightningWarp/Blink Arrow.
                                        !(leaderAnimation == AnimationE.LeapSlam ||
                                          leaderAnimation == AnimationE.LeapSlamOffhand ||
                                          leaderAnimation == AnimationE.Charge ||
@@ -160,6 +160,17 @@ namespace FollowHer
                                          leaderAnimation == AnimationE.ChargeEndRight ||
                                          leaderAnimation == AnimationE.ChargeEnd180 ||
                                          leaderAnimation == AnimationE.Teleport);
+
+                        if (leaderIsAttackingNow)
+                        {
+                            _lastLeaderAttackDetectedAt = DateTime.Now;
+                        }
+
+                        // Keep attacking for a short grace period after the leader was last seen
+                        // attacking, rather than requiring isAttacking to read true on this exact
+                        // tick - smooths over the windup/recovery gaps between individual swings.
+                        var gracePeriodMs = Settings.Combat.AttackGracePeriod.Value;
+                        shouldAttack = DateTime.Now - _lastLeaderAttackDetectedAt <= TimeSpan.FromMilliseconds(gracePeriodMs);
                     }
 
 
