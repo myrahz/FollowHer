@@ -138,18 +138,12 @@ namespace FollowHer.Core.Combat
             if (_inCombat) return;
             if (FollowManager.Update()) return;
 
-            if (FollowHer.Instance.Settings.Movement.MovementSkills.Content.Where(x => x.Enabled).Any())
-            {
-                var movementSkill = FollowHer.Instance.Settings.Movement.MovementSkills.Content
-                    .FirstOrDefault(x => x.Enabled && SkillMonitor.CanUseSkill(x));
-
-                if (movementSkill != null)
-                {
-                    SkillHandler.UseMovementSkill(movementSkill.Name, true);
-                    return;
-                }
-            }
-
+            // FollowManager owns every movement-skill decision (TryGetMovementSkill's LOS/corridor
+            // clearance checks, DashEnabled/PreferMovementSkillsForTravel gating) - this fallback
+            // only runs when there's nothing for it to do at all (Follow disabled, no leader
+            // configured), so it must never fire a directional movement skill blindly. It used to,
+            // which meant a movement skill could fire with no destination and none of that safety
+            // gating any time FollowManager had nothing to do.
             SkillHandler.UseMovementSkill(MOVE_SKILL_NAME, true);
         }
 

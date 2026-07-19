@@ -408,14 +408,25 @@ public class FollowManager
         var portal = GetBestPortalLabel(leaderPartyMember.ZoneName, referencePosition);
         var maxWalkDistance = FollowHer.Instance.Settings.Movement.ZoneTransitionMaxWalkDistance.Value;
 
-        if (portal != null && Vector3.Distance(playerPos, portal.ItemOnGround.PosNum) <= maxWalkDistance)
+        // A portal matching the target zone's name isn't necessarily the SAME connection the
+        // leader actually used - a zone can have multiple distinct transitions to another zone
+        // that lead to different regions of it (e.g. we die and respawn at the zone's entrance,
+        // which has its own transition to the next zone, while the leader actually went through a
+        // different transition elsewhere). Only trust the portal-walk path when the candidate is
+        // close to BOTH where we are now AND where the leader was last confirmed - if we just
+        // respawned somewhere else, the nearby-to-us candidate will fail this second check and we
+        // correctly fall back to teleporting straight to the leader instead.
+        var portalNearReference = portal != null &&
+                                   Vector3.Distance(referencePosition, portal.ItemOnGround.PosNum) <= maxWalkDistance;
+
+        if (portal != null && portalNearReference && Vector3.Distance(playerPos, portal.ItemOnGround.PosNum) <= maxWalkDistance)
         {
             return TryWalkToZoneTransitionPortal(portal, playerPos);
         }
 
         LogDebug(portal == null
             ? "No zone transition visible - falling back to teleport"
-            : "Zone transition is too far to walk to - falling back to teleport");
+            : "Zone transition is too far from where we are or from the leader's last known position - falling back to teleport");
         return TryTeleportToLeader(leaderPartyMember, referencePosition);
     }
 
