@@ -68,6 +68,12 @@ public class MovementSettings
     [Menu("Movement Skill Clearance Margin", "Grid cells of clearance required on each side of a ground-dash skill's travel line before it's used (accounts for character hitbox width)")]
     public RangeNode<float> MovementSkillClearanceMargin { get; set; } = new(1.5f, 0.5f, 3f);
 
+    [Menu("Movement Skill Min Distance", "Don't use a movement skill (Dash Enabled/Prefer Movement Skills For Travel) for a hop shorter than this")]
+    public RangeNode<int> MovementSkillMinDistance { get; set; } = new(100, 0, 1000);
+
+    [Menu("Movement Skill Max Distance", "Don't use a movement skill (Dash Enabled/Prefer Movement Skills For Travel) for a hop longer than this")]
+    public RangeNode<int> MovementSkillMaxDistance { get; set; } = new(1000, 100, 3000);
+
     [Menu("Input Frequency (ms)", "Minimum delay between successive movement inputs")]
     public RangeNode<int> InputFrequency { get; set; } = new(50, 1, 100);
 

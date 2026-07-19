@@ -30,8 +30,9 @@ public class FollowManager
     private const int PathSmoothingLookahead = 6;
     private const float PathRetargetThresholdGrid = 20f;
     private const int MinPathRecomputeIntervalMs = 400;
-    private const float DashMinGridDistance = 30f;
-    private const float DashMaxGridDistance = 150f;
+    // 1 grid unit = 250/23 world units (confirmed via ExileCore's own GridToWorld conversion,
+    // matching the constant already used by other plugins in this install, e.g. Radar.cs).
+    private const float GridToWorldMultiplier = 250f / 23f;
     private const int PursuitModeSwitchCooldownMs = 500;
 
     private enum PursuitMode { Direct, Pathfind }
@@ -690,8 +691,10 @@ public class FollowManager
         var settings = FollowHer.Instance.Settings.Movement;
         if (!settings.DashEnabled && !settings.PreferMovementSkillsForTravel) return null;
 
-        var distance = Vector2.Distance(playerGrid, targetGrid);
-        if (distance < DashMinGridDistance || distance > DashMaxGridDistance) return null;
+        // Compared in world units (like every other distance setting in this plugin), not grid
+        // units, so it's directly comparable to what you see in-game rather than a hidden scale.
+        var worldDistance = Vector2.Distance(playerGrid, targetGrid) * GridToWorldMultiplier;
+        if (worldDistance < settings.MovementSkillMinDistance || worldDistance > settings.MovementSkillMaxDistance) return null;
 
         var hasClearLineOfSight = HasClearLineOfSight(playerGrid, targetGrid);
 
