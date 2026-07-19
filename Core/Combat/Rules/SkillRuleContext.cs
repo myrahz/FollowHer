@@ -80,5 +80,16 @@ public class SkillRuleContext
             if (_entity == null || !_entity.TryGetComponent<Buffs>(out var buffs)) return 0f;
             return buffs.BuffsList?.FirstOrDefault(b => b.Name == name)?.Timer ?? 0f;
         }
+
+        // Warcry-style skills track their remaining empowered/exerted attack count in a buff
+        // named "display_num_empowered_attacks" whose SourceSkill identifies which cry it came
+        // from - ported from the old Sunder routine's GetRemainingExertedAttacks helper.
+        public int ExertedAttacksRemaining(string sourceSkillName)
+        {
+            if (_entity == null || !_entity.TryGetComponent<Buffs>(out var buffs)) return 0;
+            var buff = buffs.BuffsList?.FirstOrDefault(b =>
+                b.SourceSkill?.Name == sourceSkillName && b.Name == "display_num_empowered_attacks");
+            return buff?.BuffCharges ?? 0;
+        }
     }
 }

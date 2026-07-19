@@ -10,6 +10,7 @@ using ExileCore.PoEMemory.MemoryObjects;
 using ExileCore.Shared.Enums;
 using ExileCore.Shared.Helpers;
 using FollowHer.Core.Combat;
+using FollowHer.Core.Combat.Rules;
 using FollowHer.Core.Events;
 using FollowHer.Core.Events.Events;
 using FollowHer.Features.Following;
@@ -73,6 +74,14 @@ namespace FollowHer
                 {
                     _movementToggled = value;
                 };
+
+                // Seed one rule profile per old hardcoded Routine on first run only, so switching
+                // to the rule-based engine doesn't leave you with nothing to select - never
+                // overwrites profiles you've since edited/added/deleted.
+                if (Settings.Combat.Profiles.Count == 0)
+                {
+                    Settings.Combat.Profiles = DefaultRuleProfiles.CreateDefaults();
+                }
 
                 // One routine instance for the whole plugin lifetime now - "which build to play"
                 // is just which named CombatRuleProfile is active (read fresh every tick by
