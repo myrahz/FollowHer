@@ -51,6 +51,9 @@ public class MovementSettings
     [Menu("Zone Transition Max Walk Distance", "Prefer walking to and clicking the matching zone transition over teleporting to the leader - only teleport if the transition is farther than this or isn't visible at all")]
     public RangeNode<int> ZoneTransitionMaxWalkDistance { get; set; } = new(300, 50, 2000);
 
+    [Menu("Portal Approach Distance", "How close to get to a transition/portal before clicking it - doesn't need to be the portal's exact position, which may not be walkable")]
+    public RangeNode<int> PortalApproachDistance { get; set; } = new(80, 20, 300);
+
     public ToggleNode CloseFollow { get; set; } = new(true);
 
     [Menu("Disable Movement In Town", "Don't follow the leader while standing in a town or hideout")]

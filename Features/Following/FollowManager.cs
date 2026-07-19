@@ -23,7 +23,6 @@ public class FollowManager
     private const string MoveSkillName = "Move";
     private const float FollowPortalWalkTolerance = 30f;
     private const float FollowPortalSearchRadius = 100f;
-    private const float FollowPortalApproachTolerance = 50f;
     private const int MaxFollowPortalAttempts = 10;
     private const int PortalClickCooldownMs = 2500;
     private const int TpConfirmationTimeoutMs = 1500;
@@ -365,7 +364,8 @@ public class FollowManager
         }
 
         var distanceToPortal = Vector3.Distance(playerPos, portal.ItemOnGround.PosNum);
-        if (distanceToPortal > FollowPortalApproachTolerance)
+        var approachDistance = FollowHer.Instance.Settings.Movement.PortalApproachDistance.Value;
+        if (distanceToPortal > approachDistance)
         {
             return ExecuteMovement(portal.ItemOnGround.PosNum, portal.ItemOnGround.GridPosNum);
         }
@@ -422,7 +422,8 @@ public class FollowManager
     private bool TryWalkToZoneTransitionPortal(LabelOnGround portal, Vector3 playerPos)
     {
         var distanceToPortal = Vector3.Distance(playerPos, portal.ItemOnGround.PosNum);
-        if (distanceToPortal > FollowPortalApproachTolerance)
+        var approachDistance = FollowHer.Instance.Settings.Movement.PortalApproachDistance.Value;
+        if (distanceToPortal > approachDistance)
         {
             return ExecuteMovement(portal.ItemOnGround.PosNum, portal.ItemOnGround.GridPosNum);
         }
