@@ -30,6 +30,8 @@ namespace FollowHer
         private bool _movementToggled;
         private bool _fightingToggled;
         private DateTime _nextResurrectClickAt = DateTime.MinValue;
+        private DateTime _nextInviteClickAt = DateTime.MinValue;
+        private DateTime _leaderInviteFirstSeenAt = DateTime.MinValue;
         private DateTime _lastLeaderAttackDetectedAt = DateTime.MinValue;
 
         public bool MovementEnabled { get; private set; }
@@ -118,6 +120,9 @@ namespace FollowHer
 
             try
             {
+                // Runs before the alive check - being dead is no reason to sit on a pending invite.
+                TryAcceptLeaderInvite();
+
                 if (GameController.Player?.IsAlive == false)
                 {
                     TryResurrectAtCheckpoint();
@@ -144,22 +149,10 @@ namespace FollowHer
                     var actorComponent = leaderEntity?.GetComponent<Actor>();
                     if (actorComponent != null && leaderEntity.DistancePlayer < Settings.Combat.DistanceToLeaderToAttack)
                     {
-                        var leaderAnimation = actorComponent.Animation;
-                        var leaderIsAttackingNow = actorComponent.isAttacking &&
-                                       // Movement skills can read as "attacking" via isAttacking, so every
-                                       // movement-skill animation needs excluding here, not just Charge/LeapSlam:
-                                       // the full Charge family covers Shield Charge, and Teleport is the shared
-                                       // animation for Frostblink/FlameDash/LightningWarp/Blink Arrow.
-                                       !(leaderAnimation == AnimationE.LeapSlam ||
-                                         leaderAnimation == AnimationE.LeapSlamOffhand ||
-                                         leaderAnimation == AnimationE.Charge ||
-                                         leaderAnimation == AnimationE.ChargeStart ||
-                                         leaderAnimation == AnimationE.ChargeEnd ||
-                                         leaderAnimation == AnimationE.ChargeEndAlt ||
-                                         leaderAnimation == AnimationE.ChargeEndLeft ||
-                                         leaderAnimation == AnimationE.ChargeEndRight ||
-                                         leaderAnimation == AnimationE.ChargeEnd180 ||
-                                         leaderAnimation == AnimationE.Teleport);
+                        // Every skill the leader uses counts as attacking unless it's blacklisted -
+                        // see LeaderAttackDetector for why this is inverted from the old animation list.
+                        var leaderIsAttackingNow = LeaderAttackDetector.IsAttacking(
+                            actorComponent, Settings.Combat.LeaderSkillBlacklist.Value);
 
                         if (leaderIsAttackingNow)
                         {
@@ -229,6 +222,53 @@ namespace FollowHer
 
             ClickElement(button);
             _nextResurrectClickAt = DateTime.Now.AddMilliseconds(1000);
+        }
+
+        // Accepts a pending party invite only when the inviter is the configured leader. Party
+        // invites from anyone else, and every non-party invite kind (trade/friend/guild), are
+        // deliberately left for the user to deal with.
+        private void TryAcceptLeaderInvite()
+        {
+            if (!Settings.Party.AutoAcceptLeaderInvite) return;
+            if (DateTime.Now < _nextInviteClickAt) return;
+
+            var leaderName = Settings.LeaderName.Value;
+            if (string.IsNullOrWhiteSpace(leaderName)) return;
+
+            var invites = GameController.IngameState?.IngameUi?.InvitesPanel?.Invites;
+            if (invites == null || invites.Count == 0)
+            {
+                _leaderInviteFirstSeenAt = DateTime.MinValue;
+                return;
+            }
+
+            foreach (var invite in invites)
+            {
+                if (invite == null) continue;
+                if (invite.Kind != InvitesPanelItemKind.Party) continue;
+                if (!string.Equals(invite.Name?.Trim(), leaderName.Trim(), StringComparison.OrdinalIgnoreCase)) continue;
+
+                var button = invite.AcceptButton;
+                if (button is not { IsVisible: true }) continue;
+
+                // Hold off until the configured delay has elapsed since this invite first showed
+                // up, rather than clicking on the frame it renders.
+                if (_leaderInviteFirstSeenAt == DateTime.MinValue)
+                {
+                    _leaderInviteFirstSeenAt = DateTime.Now;
+                    return;
+                }
+
+                if (DateTime.Now - _leaderInviteFirstSeenAt <
+                    TimeSpan.FromMilliseconds(Settings.Party.AcceptDelay.Value)) return;
+
+                ClickElement(button);
+                _nextInviteClickAt = DateTime.Now.AddMilliseconds(1000);
+                _leaderInviteFirstSeenAt = DateTime.MinValue;
+                return;
+            }
+
+            _leaderInviteFirstSeenAt = DateTime.MinValue;
         }
 
         private void ClickElement(Element element)

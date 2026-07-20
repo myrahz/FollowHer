@@ -19,6 +19,7 @@ public class FollowHerSettings : ISettings
     public TextNode LeaderName { get; set; } = new("");
 
     public HotkeySettings Hotkeys { get; set; } = new();
+    public PartySettings Party { get; set; } = new();
     public MovementSettings Movement { get; set; } = new();
     public CombatSettings Combat { get; set; } = new();
     public TargetingSettings Targeting { get; set; } = new();
@@ -36,6 +37,16 @@ public class HotkeySettings
 
     [Menu("Fighting Toggle Key", "Toggles attacking on/off, in addition to the Precision toggle key/hotkey")]
     public HotkeyNode FightingToggleKey { get; set; } = new(Keys.None);
+}
+
+[Submenu(CollapsedByDefault = true)]
+public class PartySettings
+{
+    [Menu("Auto Accept Leader Party Invite", "Automatically accept a party invite when the inviter's name matches Leader Name - party invites from anyone else, and every non-party invite (trade/friend/guild), are left alone")]
+    public ToggleNode AutoAcceptLeaderInvite { get; set; } = new(false);
+
+    [Menu("Accept Delay (ms)", "Wait this long after the leader's invite first appears before clicking Accept, rather than clicking on the frame it renders")]
+    public RangeNode<int> AcceptDelay { get; set; } = new(500, 0, 5000);
 }
 
 [Submenu(CollapsedByDefault = true)]
@@ -131,6 +142,19 @@ public class CombatSettings
 
     [Menu("Attack Grace Period (ms)", "Keep attacking for this long after the leader was last seen attacking, instead of requiring them to be attacking at that exact instant - smooths over the gaps between individual swings")]
     public RangeNode<int> AttackGracePeriod { get; set; } = new(500, 0, 3000);
+
+    [Menu("Leader Skill Blacklist", "Comma-separated skill names that do NOT count as the leader attacking - anything else they use does. Matches either the display name or the internal name, case-insensitive, so listing both forms is harmless. Mostly movement and utility skills; add any skill that's wrongly pulling the follower into combat.")]
+    public TextNode LeaderSkillBlacklist { get; set; } = new(DefaultLeaderSkillBlacklist);
+
+    // Movement skills are the ones that must be excluded by default: they report isAttacking and
+    // occupy a skill slot just like a real attack, which is what the old hardcoded animation
+    // exclusion list existed to filter out.
+    public const string DefaultLeaderSkillBlacklist =
+        "Dash, Flame Dash, FlameDash, Frostblink, Lightning Warp, LightningWarp, " +
+        "Leap Slam, LeapSlam, Shield Charge, NewShieldCharge, Whirling Blades, WhirlingBlades, " +
+        "Charged Dash, ChargedDash, Blink Arrow, BlinkArrow, Mirror Arrow, MirrorArrow, " +
+        "Withering Step, WitheringStep, Phase Run, PhaseRun, Smoke Mine, SmokeMine, " +
+        "Convocation, Portal";
 
     public ContentNode<ActiveSkill> Skills { get; set; } = new ContentNode<ActiveSkill>()
     {
