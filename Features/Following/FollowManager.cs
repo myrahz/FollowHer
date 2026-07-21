@@ -174,13 +174,25 @@ public class FollowManager
 
                 LogDebug($"Leader visible, distance={distanceToLeader:F0}, shouldMove={shouldMove}");
 
+                var hasLineOfSight = HasClearLineOfSight(player.GridPosNum, leaderEntity.GridPosNum);
+
+                // Record the leader's position as the last reachable one whenever there's a clear
+                // walkable line to them - this is the anchor the transition-following fallback
+                // searches around. It must be updated during direct (LOS) following too, not only
+                // in the pathfinding branch below: a whole zone spent following in a straight line
+                // would otherwise leave this null, and stepping through a same-zone transition
+                // would never be handled (the fallback can't find a transition it has no anchor for).
+                if (hasLineOfSight)
+                {
+                    _lastPathfindableLeaderGrid = RoundGrid(leaderEntity.GridPosNum);
+                }
+
                 if (!shouldMove)
                 {
                     StopMovement();
                     return true;
                 }
 
-                var hasLineOfSight = HasClearLineOfSight(player.GridPosNum, leaderEntity.GridPosNum);
                 if (DeterminePursuitMode(hasLineOfSight) == PursuitMode.Direct)
                 {
                     return ExecuteMovement(leaderEntity.PosNum, leaderEntity.GridPosNum);
@@ -344,7 +356,11 @@ public class FollowManager
     {
         if (_lastPathfindableLeaderGrid == null)
         {
-            // Never successfully pathed to the leader yet this zone - best-effort direct walk.
+            // No anchor for where the leader was last reachable this zone, so there's nothing to
+            // search a transition around - best-effort direct walk toward their last known grid.
+            // This should be rare now that the anchor is also set during direct following; if it
+            // shows up in the log, the leader was never seen with a clear line this zone.
+            LogDebug("Transition follow: no last-reachable anchor yet - walking toward leader's last grid instead");
             return ExecuteMovement(GridToWorldPosition(fallbackTarget.x, fallbackTarget.y), new Vector2(fallbackTarget.x, fallbackTarget.y));
         }
 
