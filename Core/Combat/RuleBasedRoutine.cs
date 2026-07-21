@@ -61,19 +61,52 @@ public class RuleBasedRoutine : OrbWalkingRoutineBase
             _targetSelector.Update(SkillHandler.GetAllSkills());
 
             var profile = GetActiveProfile();
-            if (profile == null) return (null, null);
+            if (profile == null)
+            {
+                DiagnoseOnce($"No active profile (ActiveProfile='{FollowHer.Instance.Settings.Combat.ActiveProfile}')");
+                return (null, null);
+            }
 
             foreach (var rule in profile.Rules)
             {
                 if (!rule.Enabled) continue;
 
                 var skill = SkillHandler.GetSkill(rule.SkillName);
-                if (skill == null || !skill.Enabled || !SkillMonitor.CanUseSkill(skill)) continue;
+                if (skill == null)
+                {
+                    // Overwhelmingly the most likely cause of "combat is enabled but nothing
+                    // fires": the rule's SkillName doesn't match any name discovered off the skill
+                    // bar, so the rule is silently skipped. Log both sides so the mismatch is
+                    // obvious rather than invisible.
+                    DiagnoseOnce($"Rule skill '{rule.SkillName}' not found on the skill bar. " +
+                                 $"Discovered skills: [{string.Join(", ", SkillHandler.GetAllSkillNames())}]");
+                    continue;
+                }
+
+                if (!skill.Enabled)
+                {
+                    DiagnoseOnce($"Skill '{rule.SkillName}' is disabled in settings");
+                    continue;
+                }
+
+                if (!SkillMonitor.CanUseSkill(skill))
+                {
+                    DiagnoseOnce($"Skill '{rule.SkillName}' not usable (CanBeUsed={skill.Skill?.CanBeUsed})");
+                    continue;
+                }
 
                 Entity bestCandidate = null;
                 var bestWeight = float.MinValue;
 
-                foreach (var candidate in _targetSelector.GetValidTargets(skill))
+                var validTargets = _targetSelector.GetValidTargets(skill);
+                if (validTargets.Count == 0)
+                {
+                    DiagnoseOnce($"Skill '{rule.SkillName}' usable but no valid targets " +
+                                 $"(MaxTargetRange={FollowHer.Instance.Settings.Targeting.MaxTargetRange.Value}, " +
+                                 $"LoS='{skill.LineOfSightType.Value}')");
+                }
+
+                foreach (var candidate in validTargets)
                 {
                     var context = new SkillRuleContext(GameController, candidate);
                     if (!rule.Evaluate(context)) continue;
@@ -91,7 +124,14 @@ public class RuleBasedRoutine : OrbWalkingRoutineBase
                 // highest-weight-wins across every skill regardless of its rank.
                 if (bestCandidate != null)
                 {
+                    _lastDiagnostic = null;
                     return (skill, new EntityInfo(bestCandidate, GameController));
+                }
+
+                if (validTargets.Count > 0)
+                {
+                    DiagnoseOnce($"Skill '{rule.SkillName}' had {validTargets.Count} valid target(s) " +
+                                 $"but none matched its condition: {rule.Condition}");
                 }
             }
 
@@ -102,6 +142,19 @@ public class RuleBasedRoutine : OrbWalkingRoutineBase
             LogError($"Error in GetBestAction: {ex.Message}");
             return (null, null);
         }
+    }
+
+    private string _lastDiagnostic;
+
+    // Combat runs every tick, so the reason nothing fired is only logged when it changes -
+    // otherwise this floods the debug window and is useless for diagnosis.
+    private void DiagnoseOnce(string message)
+    {
+        if (!FollowHer.Instance.Settings.Combat.LogWhyNotAttacking) return;
+        if (message == _lastDiagnostic) return;
+
+        _lastDiagnostic = message;
+        DebugWindow.LogMsg($"[FollowHer/Combat] {message}");
     }
 
     private CombatRuleProfile GetActiveProfile()

@@ -240,6 +240,10 @@ namespace FollowHer.Core.Combat.Skills
 
         public IReadOnlyCollection<ActiveSkill> GetAllSkills() => _skills.Values.Where(s => s.Enabled).ToList();
 
+        // Every name a combat rule's SkillName is matched against - used by the combat diagnostic
+        // to show what the skill bar actually reported when a rule fails to resolve.
+        public IReadOnlyCollection<string> GetAllSkillNames() => _skills.Keys.ToList();
+
         public void Dispose()
         {
             ReleaseAllSkills();

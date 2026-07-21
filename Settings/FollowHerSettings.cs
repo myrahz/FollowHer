@@ -143,6 +143,9 @@ public class CombatSettings
     [Menu("Attack Grace Period (ms)", "Keep attacking for this long after the leader was last seen attacking, instead of requiring them to be attacking at that exact instant - smooths over the gaps between individual swings")]
     public RangeNode<int> AttackGracePeriod { get; set; } = new(500, 0, 3000);
 
+    [Menu("Log Why Not Attacking", "Log the reason the combat engine produced no action - unresolved rule skill name, skill unusable, no valid targets, or no target matching the condition. Only logs when the reason changes.")]
+    public ToggleNode LogWhyNotAttacking { get; set; } = new(false);
+
     [Menu("Leader Skill Blacklist", "Comma-separated skill names that do NOT count as the leader attacking - anything else they use does. Matches either the display name or the internal name, case-insensitive, so listing both forms is harmless. Mostly movement and utility skills; add any skill that's wrongly pulling the follower into combat.")]
     public TextNode LeaderSkillBlacklist { get; set; } = new(DefaultLeaderSkillBlacklist);
 
