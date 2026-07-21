@@ -5,6 +5,7 @@ using System.Linq;
 using System.Numerics;
 using ExileCore;
 using ExileCore.Shared.Helpers;
+using FollowHer.Core.Combat;
 using FollowHer.Core.Combat.Rules;
 using FollowHer.Settings;
 using ImGuiNET;
@@ -123,6 +124,47 @@ public class CombatRuleEditor
             }
         }
         ImGui.EndDisabled();
+    }
+
+    /// <summary>Add/remove/toggle editor for the leader-skill blacklist - names that do NOT count
+    /// as the leader attacking. Each row is a name field with an enable checkbox on the right, plus
+    /// a delete button; the "+ Add Skill" button appends a blank row to fill in.</summary>
+    public void DrawLeaderSkillBlacklist(CombatSettings settings)
+    {
+        ImGui.Separator();
+        if (!ImGui.CollapsingHeader("Leader Skill Blacklist")) return;
+
+        ImGui.TextWrapped(
+            "Skills that do NOT count as the leader attacking - the follower ignores them when " +
+            "deciding whether the leader is fighting. Matching ignores case and spaces and checks " +
+            "both the skill's display and internal name. Uncheck a row to disable it without deleting it.");
+
+        if (ImGui.Button("+ Add Skill"))
+        {
+            settings.LeaderSkillBlacklistEntries.Add(new LeaderSkillBlacklistEntry(""));
+        }
+
+        int? removeAt = null;
+        for (var i = 0; i < settings.LeaderSkillBlacklistEntries.Count; i++)
+        {
+            var entry = settings.LeaderSkillBlacklistEntries[i];
+            ImGui.PushID($"LeaderSkillBlacklist{i}");
+
+            if (ImGui.Button("X")) removeAt = i;
+            ImGui.SameLine();
+
+            var name = entry.Name ?? "";
+            ImGui.SetNextItemWidth(240);
+            if (ImGui.InputText("##name", ref name, 100)) entry.Name = name;
+
+            ImGui.SameLine();
+            var enabled = entry.Enabled;
+            if (ImGui.Checkbox("Enabled##toggle", ref enabled)) entry.Enabled = enabled;
+
+            ImGui.PopID();
+        }
+
+        if (removeAt.HasValue) settings.LeaderSkillBlacklistEntries.RemoveAt(removeAt.Value);
     }
 
     private void DrawRuleList(CombatSettings settings, CombatRuleProfile profile)

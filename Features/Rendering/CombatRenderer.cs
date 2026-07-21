@@ -106,6 +106,7 @@ namespace FollowHer.Features.Rendering
                 $"State: {state}",
                 $"Movement Enabled: {FollowHer.Instance.MovementEnabled}",
                 $"Fighting Enabled: {FollowHer.Instance.FightingEnabled}",
+                $"Fighting Active: {FollowHer.Instance.FightingActive}",
                 $"Cursor Pos: {ExileCore.Input.MousePositionNum}"
             };
 

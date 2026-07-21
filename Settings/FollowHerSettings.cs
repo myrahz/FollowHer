@@ -7,6 +7,7 @@ using ExileCore.PoEMemory.MemoryObjects;
 using ExileCore.Shared.Attributes;
 using ExileCore.Shared.Interfaces;
 using ExileCore.Shared.Nodes;
+using FollowHer.Core.Combat;
 using FollowHer.Core.Combat.Rules;
 using FollowHer.Core.Combat.Skills;
 using Newtonsoft.Json;
@@ -146,18 +147,33 @@ public class CombatSettings
     [Menu("Log Why Not Attacking", "Log the reason the combat engine produced no action - unresolved rule skill name, skill unusable, no valid targets, or no target matching the condition. Only logs when the reason changes.")]
     public ToggleNode LogWhyNotAttacking { get; set; } = new(false);
 
-    [Menu("Leader Skill Blacklist", "Comma-separated skill names that do NOT count as the leader attacking - anything else they use does. Matches either the display name or the internal name, case-insensitive, so listing both forms is harmless. Mostly movement and utility skills; add any skill that's wrongly pulling the follower into combat.")]
-    public TextNode LeaderSkillBlacklist { get; set; } = new(DefaultLeaderSkillBlacklist);
+    // Skills that do NOT count as the leader attacking. Rendered by a custom ImGui editor
+    // (CombatRuleEditor.DrawLeaderSkillBlacklist) rather than the settings auto-renderer, so it's a
+    // plain field like Profiles below. Matching ignores case and whitespace and checks both the
+    // skill's display and internal name, so one "Flame Dash" entry covers the internal "FlameDash".
+    // Movement skills are the defaults: they report isAttacking and hold a skill slot like a real
+    // attack, which is what the old hardcoded animation exclusion list existed to filter out.
+    public List<LeaderSkillBlacklistEntry> LeaderSkillBlacklistEntries = BuildDefaultLeaderSkillBlacklist();
 
-    // Movement skills are the ones that must be excluded by default: they report isAttacking and
-    // occupy a skill slot just like a real attack, which is what the old hardcoded animation
-    // exclusion list existed to filter out.
-    public const string DefaultLeaderSkillBlacklist =
-        "Dash, Flame Dash, FlameDash, Frostblink, Lightning Warp, LightningWarp, " +
-        "Leap Slam, LeapSlam, Shield Charge, NewShieldCharge, Whirling Blades, WhirlingBlades, " +
-        "Charged Dash, ChargedDash, Blink Arrow, BlinkArrow, Mirror Arrow, MirrorArrow, " +
-        "Withering Step, WitheringStep, Phase Run, PhaseRun, Smoke Mine, SmokeMine, " +
-        "Convocation, Portal";
+    private static List<LeaderSkillBlacklistEntry> BuildDefaultLeaderSkillBlacklist() => new()
+    {
+        new("Dash"),
+        new("Flame Dash"),
+        new("Frostblink"),
+        new("Lightning Warp"),
+        new("Leap Slam"),
+        new("Shield Charge"),
+        new("NewShieldCharge"),
+        new("Whirling Blades"),
+        new("Charged Dash"),
+        new("Blink Arrow"),
+        new("Mirror Arrow"),
+        new("Withering Step"),
+        new("Phase Run"),
+        new("Smoke Mine"),
+        new("Convocation"),
+        new("Portal"),
+    };
 
     public ContentNode<ActiveSkill> Skills { get; set; } = new ContentNode<ActiveSkill>()
     {

@@ -36,6 +36,9 @@ namespace FollowHer
 
         public bool MovementEnabled { get; private set; }
         public bool FightingEnabled { get; private set; }
+        // Fighting actually permitted this tick (master switch AND the combat gate, or a manual
+        // override) - distinct from FightingEnabled, which is just the master switch state.
+        public bool FightingActive { get; private set; }
 
         public FollowHer()
         {
@@ -141,9 +144,22 @@ namespace FollowHer
                 {
                     _fightingToggled = !_fightingToggled;
                 }
-                bool shouldAttack = false;
+                // Fighting is a master switch (this hotkey) AND-ed with the combat conditions
+                // below - enabling it never forces an attack on its own, it just permits one when
+                // everything else agrees. This is the fix for "always attacking even if the leader
+                // isn't": _fightingToggled used to be OR'd straight into combatActive, bypassing
+                // every gate.
+                var fightingEnabled = _fightingToggled;
+
+                // The gate that decides whether attacking is *warranted* right now, independent of
+                // whether fighting is enabled. When "Attack When Leader Is Attacking" is on, that
+                // means the leader must actually be attacking and be within range of us. When off,
+                // there's no leader-based restriction and the gate is always open (the routine's
+                // own targeting range still applies downstream).
+                var attackGateOpen = true;
                 if (Settings.Combat.AttackWhenLeaderIsAttacking)
                 {
+                    attackGateOpen = false;
                     var leaderEntity = LeaderLocator.FindLeaderEntity(GameController, Settings.LeaderName.Value);
 
                     var actorComponent = leaderEntity?.GetComponent<Actor>();
@@ -152,7 +168,7 @@ namespace FollowHer
                         // Every skill the leader uses counts as attacking unless it's blacklisted -
                         // see LeaderAttackDetector for why this is inverted from the old animation list.
                         var leaderIsAttackingNow = LeaderAttackDetector.IsAttacking(
-                            actorComponent, Settings.Combat.LeaderSkillBlacklist.Value);
+                            actorComponent, Settings.Combat.LeaderSkillBlacklistEntries);
 
                         if (leaderIsAttackingNow)
                         {
@@ -163,21 +179,27 @@ namespace FollowHer
                         // attacking, rather than requiring isAttacking to read true on this exact
                         // tick - smooths over the windup/recovery gaps between individual swings.
                         var gracePeriodMs = Settings.Combat.AttackGracePeriod.Value;
-                        shouldAttack = DateTime.Now - _lastLeaderAttackDetectedAt <= TimeSpan.FromMilliseconds(gracePeriodMs);
+                        attackGateOpen = DateTime.Now - _lastLeaderAttackDetectedAt <= TimeSpan.FromMilliseconds(gracePeriodMs);
                     }
-
-
                 }
 
+                // Precision key is a manual override: hold PrecisionKey (or toggle it on) to force
+                // fighting regardless of both the master switch and the leader gate.
+                var forceAttack = _isToggled || Input.GetKeyState(Settings.Hotkeys.PrecisionKey);
 
+                var combatActive = forceAttack || (fightingEnabled && attackGateOpen);
 
-
-                var combatActive = _isToggled || _fightingToggled || Input.GetKeyState(Settings.Hotkeys.PrecisionKey) || shouldAttack;
-                var movementActive = Settings.Movement.Enable || _movementToggled;
+                // Movement follows a single runtime state: the hotkey flips _movementToggled, which
+                // is seeded from (and kept in sync with) Movement > Enable. It must NOT be OR'd with
+                // Enable here, or the hotkey could never turn following off while Enable is checked.
+                var movementActive = _movementToggled;
                 var isActive = combatActive || movementActive;
 
                 MovementEnabled = movementActive;
-                FightingEnabled = combatActive;
+                // Reflects the master fighting switch, so the overlay tells you whether your hotkey
+                // took effect. Whether it's actually swinging this tick is FightingActive below.
+                FightingEnabled = fightingEnabled;
+                FightingActive = combatActive;
 
                 if (!isActive)
                 {
@@ -209,6 +231,7 @@ namespace FollowHer
         {
             base.DrawSettings();
             _combatRuleEditor.Draw(Settings.Combat);
+            _combatRuleEditor.DrawLeaderSkillBlacklist(Settings.Combat);
         }
 
         // Always resurrect at the checkpoint rather than in town - independent of the

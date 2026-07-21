@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 using System.Linq;
 using ExileCore.PoEMemory.Components;
@@ -18,14 +17,11 @@ namespace FollowHer.Core.Combat
     /// </summary>
     public static class LeaderAttackDetector
     {
-        private static string _cachedRaw;
-        private static HashSet<string> _cachedNames = new(StringComparer.OrdinalIgnoreCase);
-
-        public static bool IsAttacking(Actor leaderActor, string blacklistRaw)
+        public static bool IsAttacking(Actor leaderActor, IReadOnlyList<LeaderSkillBlacklistEntry> blacklist)
         {
             if (leaderActor == null) return false;
 
-            var blacklist = GetBlacklist(blacklistRaw);
+            var normalizedBlacklist = BuildNormalizedSet(blacklist);
             var blacklistedInUse = false;
             var otherInUse = false;
 
@@ -36,7 +32,7 @@ namespace FollowHer.Core.Combat
                 {
                     if (skill == null || !skill.IsUsingOrCharging) continue;
 
-                    if (IsBlacklisted(skill, blacklist)) blacklistedInUse = true;
+                    if (IsBlacklisted(skill, normalizedBlacklist)) blacklistedInUse = true;
                     else otherInUse = true;
                 }
             }
@@ -48,27 +44,38 @@ namespace FollowHer.Core.Combat
             return otherInUse || (leaderActor.isAttacking && !blacklistedInUse);
         }
 
-        private static bool IsBlacklisted(ActorSkill skill, HashSet<string> blacklist)
+        private static bool IsBlacklisted(ActorSkill skill, HashSet<string> normalizedBlacklist)
         {
-            if (blacklist.Count == 0) return false;
+            if (normalizedBlacklist.Count == 0) return false;
 
-            return (!string.IsNullOrEmpty(skill.InternalName) && blacklist.Contains(skill.InternalName)) ||
-                   (!string.IsNullOrEmpty(skill.Name) && blacklist.Contains(skill.Name));
+            return normalizedBlacklist.Contains(Normalize(skill.InternalName)) ||
+                   normalizedBlacklist.Contains(Normalize(skill.Name));
         }
 
-        // Reparsed only when the settings string actually changes, since this runs every tick.
-        private static HashSet<string> GetBlacklist(string raw)
+        // Only enabled entries are honored, so a skill can be parked in the list (unchecked)
+        // without affecting detection. The set is rebuilt each call - the list is tiny (a dozen or
+        // so entries) so there's nothing worth caching.
+        private static HashSet<string> BuildNormalizedSet(IReadOnlyList<LeaderSkillBlacklistEntry> blacklist)
         {
-            raw ??= "";
-            if (raw != _cachedRaw)
+            var set = new HashSet<string>();
+            if (blacklist == null) return set;
+
+            foreach (var entry in blacklist)
             {
-                _cachedNames = new HashSet<string>(
-                    raw.Split(',').Select(x => x.Trim()).Where(x => x.Length > 0),
-                    StringComparer.OrdinalIgnoreCase);
-                _cachedRaw = raw;
+                if (entry == null || !entry.Enabled) continue;
+                var normalized = Normalize(entry.Name);
+                if (normalized.Length > 0) set.Add(normalized);
             }
 
-            return _cachedNames;
+            return set;
+        }
+
+        // Skill names are matched case- and whitespace-insensitively, so a single "Flame Dash"
+        // entry matches the game's internal "FlameDash" without needing both spellings listed.
+        private static string Normalize(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            return new string(s.Where(c => !char.IsWhiteSpace(c)).ToArray()).ToLowerInvariant();
         }
     }
 }

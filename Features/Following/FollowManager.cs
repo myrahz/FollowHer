@@ -93,7 +93,11 @@ public class FollowManager
     public bool Update()
     {
         var settings = FollowHer.Instance.Settings.Movement;
-        if (!settings.Enable) return false;
+        // Gate on the live movement state (the hotkey-controlled toggle), not the raw Enable
+        // setting - otherwise toggling movement on via the hotkey while Enable is unchecked would
+        // let the routine run but never actually follow. MovementEnabled is set earlier this tick,
+        // before the routine's TickEvent is dispatched, so it's current here.
+        if (!FollowHer.Instance.MovementEnabled) return false;
 
         var leaderName = FollowHer.Instance.Settings.LeaderName.Value;
         if (string.IsNullOrWhiteSpace(leaderName)) return false;
