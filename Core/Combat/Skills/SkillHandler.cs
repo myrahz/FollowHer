@@ -1,4 +1,5 @@
 ﻿using ExileCore;
+using ExileCore.PoEMemory.MemoryObjects;
 using ExileCore.Shared.Nodes;
 using FollowHer.Features.Input;
 using FollowHer.Settings;
@@ -21,16 +22,34 @@ namespace FollowHer.Core.Combat.Skills
             _keyHandler = new KeyHandler();
         }
 
-        private readonly string[] MovementSkills = new[]
+        // Normalized (lowercase, whitespace-stripped) so a game name of "Frostblink" matches
+        // regardless of the exact casing/spacing the game reports - the old exact-case string[]
+        // meant "FrostBlink" never matched "Frostblink" and blink was silently never captured.
+        private static readonly HashSet<string> MovementSkillNames = new()
         {
-            "Move", "Dash", "FlameDash", "FrostBlink", "LightningWarp", "ShieldCharge", "LeapSlam",
-            "WhirlingBlades", "BlinkArrow"
+            "move", "dash", "flamedash", "frostblink", "lightningwarp",
+            "shieldcharge", "newshieldcharge", "leapslam", "whirlingblades", "blinkarrow"
         };
 
+        private static string NormalizeSkillName(string s) =>
+            string.IsNullOrEmpty(s) ? "" : new string(s.Where(c => !char.IsWhiteSpace(c)).ToArray()).ToLowerInvariant();
+
+        // Matches against both the display name and the internal name, so a movement skill is
+        // recognized whichever field the game populates.
+        private static bool IsMovementSkill(ActorSkill skill) =>
+            MovementSkillNames.Contains(NormalizeSkillName(skill.Name)) ||
+            MovementSkillNames.Contains(NormalizeSkillName(skill.InternalName));
+
         // Skills that teleport through obstacles rather than colliding with them - seeds the
-        // default for TravelsThroughObstacles when a movement skill is first discovered.
+        // default for TravelsThroughObstacles when a movement skill is first discovered. Normalized
+        // like MovementSkillNames so casing/spacing differences don't misclassify a blink as a
+        // ground dash.
         private static readonly HashSet<string> BlinkTypeMovementSkills =
-            new(StringComparer.OrdinalIgnoreCase) { "FrostBlink", "FlameDash", "LightningWarp", "BlinkArrow" };
+            new() { "frostblink", "flamedash", "lightningwarp", "blinkarrow" };
+
+        private static bool IsBlinkTypeMovementSkill(ActorSkill skill) =>
+            BlinkTypeMovementSkills.Contains(NormalizeSkillName(skill.Name)) ||
+            BlinkTypeMovementSkills.Contains(NormalizeSkillName(skill.InternalName));
 
         public void Initialize()
         {
@@ -67,7 +86,7 @@ namespace FollowHer.Core.Combat.Skills
                             continue;
 
                         ActiveSkill activeSkill;
-                        if (MovementSkills.Contains(skill.Name))
+                        if (IsMovementSkill(skill))
                         {
                             if(existingMovementSkills.TryGetValue(skill.Name, out var existingMovementSkill))
                             {
@@ -89,7 +108,7 @@ namespace FollowHer.Core.Combat.Skills
                                     UseClick = new ToggleNode(false),
                                     ExtraDelay = new RangeNode<int>(0, 0, 5000),
                                     LineOfSightType = new ListNode(),
-                                    TravelsThroughObstacles = new ToggleNode(BlinkTypeMovementSkills.Contains(skill.Name))
+                                    TravelsThroughObstacles = new ToggleNode(IsBlinkTypeMovementSkill(skill))
                                 };
                             }
 

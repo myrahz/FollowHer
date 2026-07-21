@@ -186,6 +186,16 @@ public class FollowManager
                     return ExecuteMovement(leaderEntity.PosNum, leaderEntity.GridPosNum);
                 }
 
+                // LOS to the leader is blocked, so we'd normally take the walkable detour. But if a
+                // blink skill can punch straight through the obstacle and the detour is much longer
+                // than the straight-line hop, jump directly to them instead of pathfinding around.
+                var dashShortcut = TryGetDirectDashShortcut(player, leaderEntity, settings);
+                if (dashShortcut != null)
+                {
+                    LogDebug($"Dashing directly to leader with '{dashShortcut.Name}' instead of pathfinding a longer route");
+                    return ExecuteMovement(leaderEntity.PosNum, leaderEntity.GridPosNum, dashShortcut);
+                }
+
                 LogDebug("Leader visible but line of sight is blocked - pathfinding instead of walking straight at them");
             }
 
@@ -649,7 +659,7 @@ public class FollowManager
         _nextMovementInputAt = DateTime.MinValue;
     }
 
-    internal bool ExecuteMovement(Vector3 targetWorldPosition, Vector2? targetGridPosition = null)
+    internal bool ExecuteMovement(Vector3 targetWorldPosition, Vector2? targetGridPosition = null, ActiveSkill forcedSkill = null)
     {
         var screenPos = _gameController.IngameState.Camera.WorldToScreen(targetWorldPosition);
         if (screenPos == Vector2.Zero) return false;
@@ -658,9 +668,12 @@ public class FollowManager
 
         if (DateTime.Now < _nextMovementInputAt) return true;
 
-        var movementSkill = targetGridPosition.HasValue
-            ? TryGetMovementSkill(_gameController.Player.GridPosNum, targetGridPosition.Value)
-            : null;
+        // A caller-chosen skill (e.g. the direct-dash shortcut) bypasses the normal per-target
+        // skill selection - the decision to use it, and which one, has already been made.
+        var movementSkill = forcedSkill
+            ?? (targetGridPosition.HasValue
+                ? TryGetMovementSkill(_gameController.Player.GridPosNum, targetGridPosition.Value)
+                : null);
 
         using (ExileCore.Input.InputManager.BlockUserMouseInput())
         {
@@ -690,6 +703,62 @@ public class FollowManager
     //     corridor clearance check (GridPathfinder.HasCorridorClearance) across the configured
     //     hitbox margin, and are only used when the path is already clear - never to punch
     //     through something, since they physically can't.
+    // When LOS to the leader is blocked, decide whether to blink straight to them instead of
+    // taking the walkable detour. Returns the blink skill to use, or null to fall back to
+    // pathfinding. Only evaluated when a blink skill is actually off cooldown, so the extra A*
+    // done here to measure the detour is infrequent rather than every tick.
+    private ActiveSkill TryGetDirectDashShortcut(Entity player, Entity leaderEntity, MovementSettings settings)
+    {
+        if (!settings.DashEnabled) return null;
+
+        // Only a blink-type skill can shortcut through the obstacle blocking LOS; a ground dash
+        // would just collide with it.
+        var blinkSkill = FollowHer.Instance.Settings.Movement.MovementSkills.Content
+            .FirstOrDefault(s => s.Enabled && s.Name != MoveSkillName && s.TravelsThroughObstacles &&
+                                  _skillMonitor.CanUseSkill(s));
+        if (blinkSkill == null) return null;
+
+        var directWorld = Vector3.Distance(player.PosNum, leaderEntity.PosNum);
+        if (directWorld < settings.MovementSkillMinDistance || directWorld > settings.MovementSkillMaxDistance)
+            return null;
+
+        var grid = _lineOfSight.GetGrid(LineOfSightDataType.Walkable);
+        if (grid == null) return null;
+
+        var start = RoundGrid(player.GridPosNum);
+        var target = RoundGrid(leaderEntity.GridPosNum);
+
+        var directGrid = Vector2.Distance(new Vector2(start.x, start.y), new Vector2(target.x, target.y));
+        if (directGrid < 1f) return null;
+
+        var path = GridPathfinder.AStar(grid, start, target, MaxPathSearchNodes);
+
+        // No walkable route at all, but the leader is within blink range through the wall - blink
+        // is the only way there, so take it.
+        if (path == null || path.Count == 0) return blinkSkill;
+
+        var ratio = PathGridLength(path) / directGrid;
+        if (ratio >= settings.DashShortcutPathRatio)
+        {
+            LogDebug($"Dash shortcut: walkable route {ratio:F1}x the straight-line distance (>= {settings.DashShortcutPathRatio:F1}) - blinking");
+            return blinkSkill;
+        }
+
+        return null;
+    }
+
+    private static float PathGridLength(List<(int x, int y)> path)
+    {
+        float total = 0f;
+        for (var i = 1; i < path.Count; i++)
+        {
+            total += Vector2.Distance(
+                new Vector2(path[i - 1].x, path[i - 1].y),
+                new Vector2(path[i].x, path[i].y));
+        }
+        return total;
+    }
+
     private ActiveSkill TryGetMovementSkill(Vector2 playerGrid, Vector2 targetGrid)
     {
         var settings = FollowHer.Instance.Settings.Movement;

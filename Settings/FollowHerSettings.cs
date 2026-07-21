@@ -80,6 +80,9 @@ public class MovementSettings
     [Menu("Movement Skill Clearance Margin", "Grid cells of clearance required on each side of a ground-dash skill's travel line before it's used (accounts for character hitbox width)")]
     public RangeNode<float> MovementSkillClearanceMargin { get; set; } = new(1.5f, 0.5f, 3f);
 
+    [Menu("Dash Shortcut Path Ratio", "When line of sight to the leader is blocked, blink straight to them (needs Dash Enabled + an off-cooldown blink skill) instead of pathfinding, if the walkable route is at least this many times longer than the straight-line distance. 1 = always prefer blinking when blocked; higher = only blink to skip a big detour. The straight-line hop still obeys Movement Skill Min/Max Distance.")]
+    public RangeNode<float> DashShortcutPathRatio { get; set; } = new(1.5f, 1f, 5f);
+
     [Menu("Movement Skill Min Distance", "Don't use a movement skill (Dash Enabled/Prefer Movement Skills For Travel) for a hop shorter than this")]
     public RangeNode<int> MovementSkillMinDistance { get; set; } = new(100, 0, 1000);
 
