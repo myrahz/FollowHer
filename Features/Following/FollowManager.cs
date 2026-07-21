@@ -23,7 +23,6 @@ public class FollowManager
 {
     private const string MoveSkillName = "Move";
     private const float FollowPortalWalkTolerance = 30f;
-    private const float FollowPortalSearchRadius = 100f;
     private const int MaxFollowPortalAttempts = 10;
     private const int PortalClickCooldownMs = 2500;
     private const int TpConfirmationTimeoutMs = 1500;
@@ -355,42 +354,46 @@ public class FollowManager
     // than near the player's own position.
     private bool TryFollowThroughRecentPortal(Vector3 playerPos, (int x, int y) fallbackTarget)
     {
-        if (_lastPathfindableLeaderGrid == null)
-        {
-            // No anchor for where the leader was last reachable this zone, so there's nothing to
-            // search a transition around - best-effort direct walk toward their last known grid.
-            // This should be rare now that the anchor is also set during direct following; if it
-            // shows up in the log, the leader was never seen with a clear line this zone.
-            LogDebug("Transition follow: no last-reachable anchor yet - walking toward leader's last grid instead");
-            return ExecuteMovement(GridToWorldPosition(fallbackTarget.x, fallbackTarget.y), new Vector2(fallbackTarget.x, fallbackTarget.y));
-        }
+        // The leader vanished AT the transition, so their last-known grid is the best place to
+        // center the search - better than the last-*reachable* grid, which can fall short of the
+        // transition if the leader rounded a corner before going through it.
+        var searchGrid = fallbackTarget;
+        var searchWorld = GridToWorldPosition(searchGrid.x, searchGrid.y);
 
-        var referenceGrid = _lastPathfindableLeaderGrid.Value;
-
-        if (_portalSearchReference != referenceGrid)
+        if (_portalSearchReference != searchGrid)
         {
-            _portalSearchReference = referenceGrid;
+            _portalSearchReference = searchGrid;
             _portalClickAttempts = 0;
             _nextPortalClickAt = DateTime.MinValue;
         }
 
         if (_portalClickAttempts >= MaxFollowPortalAttempts)
         {
-            LogDebug("Gave up looking for a transition near the leader's last reachable position");
+            LogDebug("Gave up looking for a transition near where the leader was last seen");
             StopMovement();
             return true;
         }
 
-        var referenceWorld = GridToWorldPosition(referenceGrid.x, referenceGrid.y);
+        // Look immediately (not only after walking to an anchor), and from several centers -
+        // where the leader vanished, then the last reachable spot, then our own position -
+        // so a transition already in render range is picked up right away.
+        var searchRadius = FollowHer.Instance.Settings.Movement.TransitionSearchRadius.Value;
+        var transition = FindNearbyTransition(searchWorld, searchRadius)
+            ?? (_lastPathfindableLeaderGrid is { } anchor
+                    ? FindNearbyTransition(GridToWorldPosition(anchor.x, anchor.y), searchRadius)
+                    : null)
+            ?? FindNearbyTransition(playerPos, searchRadius);
 
-        if (Vector3.Distance(playerPos, referenceWorld) > FollowPortalWalkTolerance)
-        {
-            return ExecuteMovement(referenceWorld, new Vector2(referenceGrid.x, referenceGrid.y));
-        }
-
-        var transition = FindNearbyTransition(referenceWorld, FollowPortalSearchRadius);
         if (transition == null)
         {
+            // Nothing in range yet - close the distance toward where the leader vanished so a
+            // transition comes into render range, then look again next tick.
+            if (Vector3.Distance(playerPos, searchWorld) > FollowPortalWalkTolerance)
+            {
+                return ExecuteMovement(searchWorld, new Vector2(searchGrid.x, searchGrid.y));
+            }
+
+            LogDebug("At the leader's last position but no transition found in range");
             StopMovement();
             return true;
         }
@@ -405,7 +408,7 @@ public class FollowManager
 
         if (DateTime.Now < _nextPortalClickAt) return true;
 
-        LogDebug("Found a transition near the leader's last reachable position - clicking it");
+        LogDebug("Found a transition near where the leader was last seen - clicking it");
         // Release any held movement input first - a still-held Move key/mouse button can swallow
         // or override the click that follows.
         StopMovement();

@@ -66,6 +66,9 @@ public class MovementSettings
     [Menu("Portal Approach Distance", "How close to get to a transition/portal before clicking it - doesn't need to be the portal's exact position, which may not be walkable")]
     public RangeNode<int> PortalApproachDistance { get; set; } = new(80, 20, 300);
 
+    [Menu("Transition Search Radius", "How far from where the leader was last seen to look for the transition/portal they went through. Raise this if the follower reaches the leader's last spot but never finds the transition (e.g. the leader rounded a corner before going through).")]
+    public RangeNode<int> TransitionSearchRadius { get; set; } = new(200, 50, 1000);
+
     public ToggleNode CloseFollow { get; set; } = new(true);
 
     [Menu("Disable Movement In Town", "Don't follow the leader while standing in a town or hideout")]
