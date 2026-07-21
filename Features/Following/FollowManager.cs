@@ -7,6 +7,7 @@ using ExileCore;
 using ExileCore.PoEMemory;
 using ExileCore.PoEMemory.Elements;
 using ExileCore.PoEMemory.MemoryObjects;
+using ExileCore.Shared.Enums;
 using ExileCore.Shared.Helpers;
 using FollowHer.Core.Combat.Skills;
 using FollowHer.Core.Events;
@@ -387,18 +388,19 @@ public class FollowManager
             return ExecuteMovement(referenceWorld, new Vector2(referenceGrid.x, referenceGrid.y));
         }
 
-        var portal = FindNearbyPortal(referenceWorld, FollowPortalSearchRadius);
-        if (portal == null)
+        var transition = FindNearbyTransition(referenceWorld, FollowPortalSearchRadius);
+        if (transition == null)
         {
             StopMovement();
             return true;
         }
 
-        var distanceToPortal = Vector3.Distance(playerPos, portal.ItemOnGround.PosNum);
+        var target = transition.Value;
+        var distanceToPortal = Vector3.Distance(playerPos, target.WorldPos);
         var approachDistance = FollowHer.Instance.Settings.Movement.PortalApproachDistance.Value;
         if (distanceToPortal > approachDistance)
         {
-            return ExecuteMovement(portal.ItemOnGround.PosNum, portal.ItemOnGround.GridPosNum);
+            return ExecuteMovement(target.WorldPos, target.GridPos);
         }
 
         if (DateTime.Now < _nextPortalClickAt) return true;
@@ -407,7 +409,7 @@ public class FollowManager
         // Release any held movement input first - a still-held Move key/mouse button can swallow
         // or override the click that follows.
         StopMovement();
-        ClickElement(portal.Label);
+        ClickTransition(target);
         _portalClickAttempts++;
         _nextPortalClickAt = DateTime.Now.AddMilliseconds(PortalClickCooldownMs);
         return true;
@@ -502,6 +504,76 @@ public class FollowManager
             ?? Enumerable.Empty<LabelOnGround>();
     }
 
+    // A place we can walk to and click to change area - either a portal or an area transition.
+    // Sourced from both ground labels and the entity list, and may or may not carry a clickable
+    // label (area-transition doorways frequently have no visible ground label from a distance, so
+    // those are clicked at their world position instead).
+    private readonly struct TransitionTarget
+    {
+        public readonly Vector3 WorldPos;
+        public readonly Vector2 GridPos;
+        public readonly Element Label;
+
+        public TransitionTarget(Vector3 worldPos, Vector2 gridPos, Element label)
+        {
+            WorldPos = worldPos;
+            GridPos = gridPos;
+            Label = label;
+        }
+    }
+
+    // Portals and town portals reliably produce a visible ground label; area-transition doorways
+    // often don't until you're right on top of them - so those are read straight from the entity
+    // list, which exists regardless of label visibility. Doors (intra-zone) are deliberately
+    // excluded so the follower doesn't click random doorways as if they were zone changes.
+    private static readonly EntityType[] TransitionEntityTypes =
+        { EntityType.AreaTransition, EntityType.Portal, EntityType.TownPortal };
+
+    private IEnumerable<Entity> GetTransitionEntities()
+    {
+        var byType = _gameController?.EntityListWrapper?.ValidEntitiesByType;
+        if (byType == null) yield break;
+
+        foreach (var type in TransitionEntityTypes)
+        {
+            if (!byType.TryGetValue(type, out var list) || list == null) continue;
+            foreach (var entity in list)
+            {
+                if (entity is { IsValid: true }) yield return entity;
+            }
+        }
+    }
+
+    // Merges both sources into a single candidate list, de-duplicated by grid cell so a portal that
+    // appears as both a ground label and an entity isn't offered twice. Label-sourced candidates
+    // come first so a clickable label is preferred over a bare world-position click for the same spot.
+    private IEnumerable<TransitionTarget> GetTransitionCandidates()
+    {
+        var seen = new HashSet<(int, int)>();
+
+        foreach (var label in GetPortalCandidates())
+        {
+            var grid = RoundGrid(label.ItemOnGround.GridPosNum);
+            if (seen.Add(grid))
+                yield return new TransitionTarget(label.ItemOnGround.PosNum, label.ItemOnGround.GridPosNum, label.Label);
+        }
+
+        foreach (var entity in GetTransitionEntities())
+        {
+            var grid = RoundGrid(entity.GridPosNum);
+            if (seen.Add(grid))
+                yield return new TransitionTarget(entity.PosNum, entity.GridPosNum, null);
+        }
+    }
+
+    private void ClickTransition(TransitionTarget target)
+    {
+        if (target.Label != null)
+            ClickElement(target.Label);
+        else
+            ClickWorldPosition(target.WorldPos);
+    }
+
     private LabelOnGround GetBestPortalLabel(string leaderZoneName, Vector3 referencePosition)
     {
         var currentArea = _gameController.Area?.CurrentArea;
@@ -525,12 +597,22 @@ public class FollowManager
             .FirstOrDefault();
     }
 
-    private LabelOnGround FindNearbyPortal(Vector3 referencePosition, float maxDistance)
+    private TransitionTarget? FindNearbyTransition(Vector3 referencePosition, float maxDistance)
     {
-        return GetPortalCandidates()
-            .Where(x => Vector3.Distance(referencePosition, x.ItemOnGround.PosNum) < maxDistance)
-            .OrderBy(x => Vector3.Distance(referencePosition, x.ItemOnGround.PosNum))
-            .FirstOrDefault();
+        TransitionTarget? best = null;
+        var bestDistance = float.MaxValue;
+
+        foreach (var candidate in GetTransitionCandidates())
+        {
+            var distance = Vector3.Distance(referencePosition, candidate.WorldPos);
+            if (distance < maxDistance && distance < bestDistance)
+            {
+                bestDistance = distance;
+                best = candidate;
+            }
+        }
+
+        return best;
     }
 
     private List<(int x, int y)> SmoothPath(List<(int x, int y)> rawPath)
