@@ -177,14 +177,42 @@ namespace FollowHer.Features.Targeting
         public List<Entity> GetValidTargets(ActiveSkill skill)
         {
             var entities = _entityScanner.GetEntitiesInRange(_maxTargetDistance);
+
+            // The RequireLineOfSight toggle used to be honored only by the density analyzer while
+            // this filter enforced LOS unconditionally - so turning it off did nothing for actual
+            // target selection. Now it's the real switch: off means distance/targetability only.
+            var requireLos = FollowHer.Instance.Settings.Targeting.LineOfSight.RequireLineOfSight;
             var losType = LineOfSight.Parse(skill.LineOfSightType.Value);
 
             return entities.Where(e =>
             {
                 if (!IsTargetValid(e)) return false;
+                if (!requireLos) return true;
+
                 var hasLos = _entityScanner.GetEntityLineOfSight(e, losType);
                 return hasLos.HasValue && hasLos.Value;
             }).ToList();
+        }
+
+        /// <summary>Per-stage counts for the combat diagnostic - pins down whether "no valid
+        /// target" is a range problem, a targetability problem, or line-of-sight filtering.</summary>
+        public string DescribeTargetFiltering(ActiveSkill skill)
+        {
+            var entities = _entityScanner.GetEntitiesInRange(_maxTargetDistance).ToList();
+            var losType = LineOfSight.Parse(skill.LineOfSightType.Value);
+            var requireLos = FollowHer.Instance.Settings.Targeting.LineOfSight.RequireLineOfSight;
+
+            int valid = 0, withLos = 0;
+            foreach (var e in entities)
+            {
+                if (!IsTargetValid(e)) continue;
+                valid++;
+                var los = _entityScanner.GetEntityLineOfSight(e, losType);
+                if (los.HasValue && los.Value) withLos++;
+            }
+
+            return $"inRange={entities.Count}, targetable={valid}, withLoS={withLos} " +
+                   $"(losLayer={losType}, requireLoS={requireLos.Value}, maxRange={_maxTargetDistance})";
         }
 
         private Entity FindBestTarget(System.Collections.Generic.IEnumerable<Entity> entities, Vector2 playerPos)

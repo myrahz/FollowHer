@@ -101,9 +101,8 @@ public class RuleBasedRoutine : OrbWalkingRoutineBase
                 var validTargets = _targetSelector.GetValidTargets(skill);
                 if (validTargets.Count == 0)
                 {
-                    DiagnoseOnce($"Skill '{rule.SkillName}' usable but no valid targets " +
-                                 $"(MaxTargetRange={FollowHer.Instance.Settings.Targeting.MaxTargetRange.Value}, " +
-                                 $"LoS='{skill.LineOfSightType.Value}')");
+                    DiagnoseOnce($"Skill '{rule.SkillName}' usable but no valid targets. " +
+                                 _targetSelector.DescribeTargetFiltering(skill));
                 }
 
                 foreach (var candidate in validTargets)
