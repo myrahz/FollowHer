@@ -107,6 +107,12 @@ public class FollowManager
 
         try
         {
+            // The teleport-to-player confirmation window is modal: resolve it before any other
+            // movement or click this tick. Without this, the walk-vs-teleport decision could flip
+            // between ticks and click a zone transition while this window is still open (opening the
+            // window with one action, then clicking the transition with the next).
+            if (TryConfirmOpenTeleportWindow()) return true;
+
             var currentArea = _gameController.Area?.CurrentArea;
             // Disabling movement in town only blocks normal same-zone following - it must not
             // block the leader-left-town case, so the zone-transition check below still runs.
@@ -438,6 +444,14 @@ public class FollowManager
             ? GridToWorldPosition(_lastPathfindableLeaderGrid.Value.x, _lastPathfindableLeaderGrid.Value.y)
             : _gameController.Player.PosNum;
 
+        // Once a teleport is committed (TP button clicked, confirmation pending or showing), stay on
+        // the teleport path until it resolves - re-deciding here is what let a transition get
+        // clicked while the confirmation window was still open.
+        if (IsTeleportInProgress())
+        {
+            return TryTeleportToLeader(leaderPartyMember, referencePosition);
+        }
+
         // Prefer walking to and clicking the matching zone transition over teleporting - only
         // teleport if it's too far to bother walking to, or we can't see one at all.
         var playerPos = _gameController.Player.PosNum;
@@ -662,6 +676,34 @@ public class FollowManager
     // Default path is teleport-to-player: click the party panel's TP button, then confirm the
     // popup it opens. Only if that popup never shows up (TP unavailable/failed) do we fall back
     // to hunting for the zone-transition portal near the leader's last reachable position.
+    // Confirms an open teleport-to-player window. Returns true if the window was open (handled or
+    // waiting out the click cooldown), false if there was no window. Called at the top of Update so
+    // the modal is always resolved before any competing movement/click decision runs.
+    private bool TryConfirmOpenTeleportWindow()
+    {
+        var confirmationButton = GetTpConfirmationButton();
+        if (confirmationButton == null) return false;
+
+        if (DateTime.Now < _nextTpActionAt) return true;
+
+        LogDebug("Teleport confirmation window open - confirming before anything else");
+        StopMovement();
+        ClickElement(confirmationButton);
+        _tpButtonClickedAt = null;
+        _nextTpActionAt = DateTime.Now.AddMilliseconds(500);
+        return true;
+    }
+
+    // A teleport is "in flight" from the moment we click the TP button until either the
+    // confirmation window is dealt with or the wait for it times out. While it's in flight, the
+    // zone-transition logic must not switch back to walking to / clicking a transition.
+    private bool IsTeleportInProgress()
+    {
+        if (GetTpConfirmationButton() != null) return true;
+        return _tpButtonClickedAt.HasValue &&
+               DateTime.Now - _tpButtonClickedAt.Value < TimeSpan.FromMilliseconds(TpConfirmationTimeoutMs);
+    }
+
     private bool TryTeleportToLeader(PartyMemberInfo leaderPartyMember, Vector3 referencePosition)
     {
         if (DateTime.Now < _nextTpActionAt) return true;
