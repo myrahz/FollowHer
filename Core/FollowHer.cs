@@ -32,6 +32,7 @@ namespace FollowHer
         private DateTime _nextResurrectClickAt = DateTime.MinValue;
         private DateTime _nextInviteClickAt = DateTime.MinValue;
         private DateTime _leaderInviteFirstSeenAt = DateTime.MinValue;
+        private DateTime _nextGemLevelClickAt = DateTime.MinValue;
         private DateTime _lastLeaderAttackDetectedAt = DateTime.MinValue;
 
         public bool MovementEnabled { get; private set; }
@@ -125,6 +126,7 @@ namespace FollowHer
             {
                 // Runs before the alive check - being dead is no reason to sit on a pending invite.
                 TryAcceptLeaderInvite();
+                TryLevelUpGems();
 
                 if (GameController.Player?.IsAlive == false)
                 {
@@ -292,6 +294,20 @@ namespace FollowHer
             }
 
             _leaderInviteFirstSeenAt = DateTime.MinValue;
+        }
+
+        // Clicks "Level Up All Gems" whenever the gem level-up panel shows it. Independent of the
+        // movement/fighting toggles - leveling gems has nothing to do with either.
+        private void TryLevelUpGems()
+        {
+            if (!Settings.Automation.AutoLevelUpGems) return;
+            if (DateTime.Now < _nextGemLevelClickAt) return;
+
+            var button = GameController.IngameState?.IngameUi?.GemLvlUpPanel?.LevelUpAllGemsButton;
+            if (button is not { IsVisible: true }) return;
+
+            ClickElement(button);
+            _nextGemLevelClickAt = DateTime.Now.AddMilliseconds(1000);
         }
 
         private void ClickElement(Element element)

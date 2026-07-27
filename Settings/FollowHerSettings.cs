@@ -21,6 +21,7 @@ public class FollowHerSettings : ISettings
 
     public HotkeySettings Hotkeys { get; set; } = new();
     public PartySettings Party { get; set; } = new();
+    public AutomationSettings Automation { get; set; } = new();
     public MovementSettings Movement { get; set; } = new();
     public CombatSettings Combat { get; set; } = new();
     public TargetingSettings Targeting { get; set; } = new();
@@ -51,6 +52,13 @@ public class PartySettings
 }
 
 [Submenu(CollapsedByDefault = true)]
+public class AutomationSettings
+{
+    [Menu("Auto Level Up Gems", "When the gem level-up panel appears, click its 'Level Up All Gems' button. Runs every tick regardless of the movement/fighting toggles.")]
+    public ToggleNode AutoLevelUpGems { get; set; } = new(false);
+}
+
+[Submenu(CollapsedByDefault = true)]
 public class MovementSettings
 {
     public ToggleNode Enable { get; set; } = new(true);
@@ -68,6 +76,9 @@ public class MovementSettings
 
     [Menu("Transition Search Radius", "How far from where the leader was last seen to look for the transition/portal they went through. Raise this if the follower reaches the leader's last spot but never finds the transition (e.g. the leader rounded a corner before going through).")]
     public RangeNode<int> TransitionSearchRadius { get; set; } = new(200, 50, 1000);
+
+    [Menu("Leader Teleport Jump Distance", "If the leader's position jumps more than this (world units) in a single update - e.g. you're right next to them and suddenly they read across the map - treat it as them having taken a transition at their PREVIOUS position rather than chasing the far reading. Set 0 to disable. Must be large enough to not trip on a normal movement-skill hop.")]
+    public RangeNode<int> LeaderTeleportJumpDistance { get; set; } = new(1500, 0, 10000);
 
     public ToggleNode CloseFollow { get; set; } = new(true);
 

@@ -107,11 +107,20 @@ public class FollowManager
 
         try
         {
-            // The teleport-to-player confirmation window is modal: resolve it before any other
-            // movement or click this tick. Without this, the walk-vs-teleport decision could flip
-            // between ticks and click a zone transition while this window is still open (opening the
-            // window with one action, then clicking the transition with the next).
+            // The teleport-to-player confirmation window is modal: if it's open, click it and
+            // nothing else this tick.
             if (TryConfirmOpenTeleportWindow()) return true;
+
+            // Once the TP button has been clicked, the confirmation window may take a moment to
+            // appear. Until it does (or the wait times out), freeze every other action - otherwise
+            // the follow logic keeps running and clicks the zone transition in that gap, which is
+            // exactly the "clicked teleport, then clicked the transition before the window popped"
+            // bug. The rule of thumb: while a teleport is in flight, click nothing but the window.
+            if (IsTeleportInProgress())
+            {
+                StopMovement();
+                return true;
+            }
 
             var currentArea = _gameController.Area?.CurrentArea;
             // Disabling movement in town only blocks normal same-zone following - it must not
@@ -155,7 +164,35 @@ public class FollowManager
 
             if (leaderEntity != null)
             {
-                targetGrid = RoundGrid(leaderEntity.GridPosNum);
+                var newGrid = RoundGrid(leaderEntity.GridPosNum);
+
+                // Detect a sudden large jump in the leader's position: you're right next to them and
+                // in one update they read from across the map. That's not real movement - they went
+                // through a transition/teleport and the far reading is stale. Treat it as a
+                // disappearance at their PREVIOUS position (where the transition is) instead of
+                // chasing the jumped-to spot. _lastKnownLeaderGrid is reset on area change, so this
+                // can't misfire on the first tick after a zone load.
+                var jumpThreshold = settings.LeaderTeleportJumpDistance.Value;
+                if (jumpThreshold > 0 && _lastKnownLeaderGrid.HasValue)
+                {
+                    var prevGrid = _lastKnownLeaderGrid.Value;
+                    var jumpWorld = Vector2.Distance(
+                        new Vector2(prevGrid.x, prevGrid.y),
+                        new Vector2(newGrid.x, newGrid.y)) * GridToWorldMultiplier;
+
+                    if (jumpWorld > jumpThreshold)
+                    {
+                        LogDebug($"Leader position jumped {jumpWorld:F0} (> {jumpThreshold}) in one update - treating as a transition at their previous position");
+                        // Keep _lastKnownLeaderGrid at the pre-jump spot (don't adopt the far
+                        // reading) so we stay committed to finding the transition there; the entity
+                        // usually goes null a tick or two later and normal transition-following
+                        // takes over from the same anchor.
+                        _lastPathfindableLeaderGrid = prevGrid;
+                        return TryFollowThroughRecentPortal(player.PosNum, prevGrid);
+                    }
+                }
+
+                targetGrid = newGrid;
                 _lastKnownLeaderGrid = targetGrid;
                 _lastKnownLeaderZone = "";
                 _leaderZoneChangeTime = DateTime.MinValue;
@@ -243,6 +280,23 @@ public class FollowManager
         }
     }
 
+    // Blink/teleport movement skills pass OVER obstacles (gaps, chasms, low terrain) but still
+    // can't go through a solid wall - they need to be able to *see* the destination. That's the
+    // targeting (Terrain) LOS layer, which blocks on walls, as opposed to the Walkable layer used
+    // by HasClearLineOfSight (which blocks on anything you can't walk on, e.g. a gap you could
+    // still blink across). A blink must only be used when this is clear.
+    private bool HasTargetingLineOfSight(Vector2 playerGrid, Vector2 targetGrid)
+    {
+        try
+        {
+            return _lineOfSight.HasLineOfSight(playerGrid, targetGrid, LineOfSightDataType.Terrain);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     // Only switches direct-walk <-> pathfind once the cooldown has elapsed, so a single noisy
     // LOS reading right at a corner/doorway edge can't flip the movement target every tick.
     private PursuitMode DeterminePursuitMode(bool hasClearLineOfSight)
@@ -311,7 +365,17 @@ public class FollowManager
 
         if (_currentPath == null)
         {
-            return TryFollowThroughRecentPortal(player.PosNum, target);
+            if (!leaderVisible)
+            {
+                // No path AND the leader is out of sight - they've genuinely left (through a
+                // transition right here). This is the "disappeared" case: go find it.
+                return TryFollowThroughRecentPortal(player.PosNum, target);
+            }
+
+            // The leader is still visible - A* just couldn't reach their exact cell (they're often
+            // standing on a cell it treats as blocked). They haven't gone anywhere, so DON'T hunt
+            // for a transition; walk straight toward them instead.
+            return ExecuteMovement(GridToWorldPosition(target.x, target.y), new Vector2(target.x, target.y));
         }
 
         while (_currentPathIndex < _currentPath.Count)
@@ -444,13 +508,8 @@ public class FollowManager
             ? GridToWorldPosition(_lastPathfindableLeaderGrid.Value.x, _lastPathfindableLeaderGrid.Value.y)
             : _gameController.Player.PosNum;
 
-        // Once a teleport is committed (TP button clicked, confirmation pending or showing), stay on
-        // the teleport path until it resolves - re-deciding here is what let a transition get
-        // clicked while the confirmation window was still open.
-        if (IsTeleportInProgress())
-        {
-            return TryTeleportToLeader(leaderPartyMember, referencePosition);
-        }
+        // (A teleport already in flight is handled globally at the top of Update, which returns
+        // before reaching here - so this only runs when no teleport is pending.)
 
         // Prefer walking to and clicking the matching zone transition over teleporting - only
         // teleport if it's too far to bother walking to, or we can't see one at all.
@@ -704,31 +763,21 @@ public class FollowManager
                DateTime.Now - _tpButtonClickedAt.Value < TimeSpan.FromMilliseconds(TpConfirmationTimeoutMs);
     }
 
+    // Confirming an open window, and waiting while one is pending, are both handled globally at the
+    // top of Update - so this only ever runs when no teleport is in flight. Its jobs are just:
+    // click the TP button, or (if a prior teleport timed out with no window) fall back to the
+    // zone transition.
     private bool TryTeleportToLeader(PartyMemberInfo leaderPartyMember, Vector3 referencePosition)
     {
         if (DateTime.Now < _nextTpActionAt) return true;
 
-        var confirmationButton = GetTpConfirmationButton();
-        if (confirmationButton != null)
-        {
-            LogDebug("Teleport confirmation window open - confirming");
-            StopMovement();
-            ClickElement(confirmationButton);
-            _tpButtonClickedAt = null;
-            _nextTpActionAt = DateTime.Now.AddMilliseconds(500);
-            return true;
-        }
-
+        // Reaching here with a click still recorded means the confirmation window never appeared
+        // within the timeout (the in-flight wait already elapsed at the top of Update) - give up on
+        // the teleport and try the zone transition instead.
         if (_tpButtonClickedAt.HasValue)
         {
-            if (DateTime.Now - _tpButtonClickedAt.Value < TimeSpan.FromMilliseconds(TpConfirmationTimeoutMs))
-            {
-                // Already clicked TP, still waiting to see whether a confirmation window appears.
-                return true;
-            }
-
-            LogDebug("Teleport-to-player produced no confirmation window - falling back to the zone transition portal");
             _tpButtonClickedAt = null;
+            LogDebug("Teleport-to-player produced no confirmation window - falling back to the zone transition portal");
             return TryClickZoneTransitionPortal(leaderPartyMember.ZoneName, referencePosition);
         }
 
@@ -838,8 +887,9 @@ public class FollowManager
     // Movement skills come in two mechanically different flavors, and each setting now maps onto
     // exactly one of them (see ActiveSkill.TravelsThroughObstacles):
     //   - DashEnabled -> blink-type skills (Frostblink/FlameDash/LightningWarp/BlinkArrow), which
-    //     ignore obstacles entirely and only need LOS - so they're only useful to punch through a
-    //     blocked path, never as a plain speed boost on ground that's already clear.
+    //     pass OVER obstacles but still need targeting LOS to the destination (they can't go through
+    //     a solid wall). Used to cross something unwalkable you can still see across (a gap), not as
+    //     a plain speed boost on ground that's already clear.
     //   - PreferMovementSkillsForTravel -> ground-dash skills (Shield Charge/Whirling Blades),
     //     which collide with obstacles like a moving hitbox - a thin center-line LOS pass isn't
     //     enough to guarantee they won't clip a corner, so they additionally require a full
@@ -850,9 +900,17 @@ public class FollowManager
     // taking the walkable detour. Returns the blink skill to use, or null to fall back to
     // pathfinding. Only evaluated when a blink skill is actually off cooldown, so the extra A*
     // done here to measure the detour is infrequent rather than every tick.
+    // Skills (including movement skills) can't be used in town/hideout, so never pick one there.
+    private bool IsInTownOrHideout()
+    {
+        var area = _gameController.Area?.CurrentArea;
+        return area != null && (area.IsTown || area.IsHideout);
+    }
+
     private ActiveSkill TryGetDirectDashShortcut(Entity player, Entity leaderEntity, MovementSettings settings)
     {
         if (!settings.DashEnabled) return null;
+        if (IsInTownOrHideout()) return null;
 
         // Only a blink-type skill can shortcut through the obstacle blocking LOS; a ground dash
         // would just collide with it.
@@ -863,6 +921,11 @@ public class FollowManager
 
         var directWorld = Vector3.Distance(player.PosNum, leaderEntity.PosNum);
         if (directWorld < settings.MovementSkillMinDistance || directWorld > settings.MovementSkillMaxDistance)
+            return null;
+
+        // A blink can only go where it can see. Without this it would try to blink straight into a
+        // wall whenever the walkable path was long - it passes over gaps, not through solid terrain.
+        if (!HasTargetingLineOfSight(player.GridPosNum, leaderEntity.GridPosNum))
             return null;
 
         var grid = _lineOfSight.GetGrid(LineOfSightDataType.Walkable);
@@ -876,8 +939,8 @@ public class FollowManager
 
         var path = GridPathfinder.AStar(grid, start, target, MaxPathSearchNodes);
 
-        // No walkable route at all, but the leader is within blink range through the wall - blink
-        // is the only way there, so take it.
+        // No walkable route at all, but targeting LOS to the leader is clear (checked above) - i.e.
+        // a gap/chasm we can see across but not walk across. Blink is the only way there, so take it.
         if (path == null || path.Count == 0) return blinkSkill;
 
         var ratio = PathGridLength(path) / directGrid;
@@ -906,6 +969,7 @@ public class FollowManager
     {
         var settings = FollowHer.Instance.Settings.Movement;
         if (!settings.DashEnabled && !settings.PreferMovementSkillsForTravel) return null;
+        if (IsInTownOrHideout()) return null;
 
         // Compared in world units (like every other distance setting in this plugin), not grid
         // units, so it's directly comparable to what you see in-game rather than a hidden scale.
@@ -918,16 +982,16 @@ public class FollowManager
 
         var hasClearLineOfSight = HasClearLineOfSight(playerGrid, targetGrid);
 
-        if (settings.DashEnabled && !hasClearLineOfSight)
+        // Blink is for crossing something you can't walk through but CAN see across (a gap/chasm):
+        // walkable LOS blocked, but targeting LOS clear. Requiring targeting LOS here stops it from
+        // trying to blink into a wall/corner (walkable AND targeting both blocked).
+        if (settings.DashEnabled && !hasClearLineOfSight && HasTargetingLineOfSight(playerGrid, targetGrid))
         {
             var blinkSkill = FollowHer.Instance.Settings.Movement.MovementSkills.Content
                 .FirstOrDefault(s => s.Enabled && s.Name != MoveSkillName && s.TravelsThroughObstacles &&
                                       _skillMonitor.CanUseSkill(s));
             if (blinkSkill != null) return blinkSkill;
-            if (settings.DashEnabled)
-            {
-                LogDebug("Movement skill: DashEnabled path (LOS blocked) found no enabled/off-cooldown blink-type skill");
-            }
+            LogDebug("Movement skill: DashEnabled path (walkable blocked, target visible) found no enabled/off-cooldown blink-type skill");
         }
 
         if (settings.PreferMovementSkillsForTravel)

@@ -58,6 +58,7 @@ public static class DefaultRuleProfiles
         Name = "ConcLeveling",
         Rules = new List<CombatRule>
         {
+            Rule("DecoyTotem", "(Target.Rarity == MonsterRarity.Rare || Target.Rarity == MonsterRarity.Unique) && !HasNearbyEntityWithMetadata(\"Metadata/Monsters/Totems/TauntTotem\", 30)"),
             Rule("ExplosiveConcoction"),
             Rule("PoisonousConcoction"),
             Rule("PoisonousConcoctionAltX"),
