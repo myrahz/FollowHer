@@ -10,119 +10,125 @@ using ExileCore.Shared.Enums;
 
 namespace FollowHer.Features.Following.Tasks;
 
-/// <summary>Ported from AreWeThereYet's AutoPilot.GetQuestItem()/Loot task - walks to and clicks
-/// the ground label of the nearest QuestItem, giving up after a few failed attempts.
+/// <summary>Picks up quest items the leader has been near. Two behaviours matter here:
 ///
-/// Once it commits to an item it stays committed until the item is gone, the attempt cap is hit,
-/// or the commitment times out. The acquisition gates (pickup range, leader proximity) are checked
-/// *only* before committing: re-checking them every tick meant that a leader who kept walking
-/// would pull those gates false mid-approach, hand control back to follow, and then hand it back
-/// to this task a moment later - the follower oscillated between the item and the leader and burnt
-/// its attempt budget without ever reaching the item.</summary>
+/// 1. "Leader was near it" is sticky - once the leader has been within range of a quest item, the
+///    follower commits to grabbing it even after the leader moves off or steps through a transition.
+///    Otherwise the follower would teleport after the leader without ever getting the quest state,
+///    which it can't acquire from the other side.
+///
+/// 2. It doesn't pathfind to the item itself. As long as the label is visible and there's a walkable
+///    path, it just clicks and lets the game's click-to-move walk the character there - issuing our
+///    own movement on top of that fought the game and made the pickup stutter.</summary>
 public class QuestItemPickupTask : IFollowTask
 {
-    private const float ApproachTolerance = 40f;
-    private const int MaxClickAttempts = 3;
-    private const int ClickCooldownMs = 1000;
-    private const int CommitmentTimeoutMs = 15000;
+    private const int ClickCooldownMs = 800;
+    private const int CommitmentTimeoutMs = 20000;
 
     private long _currentItemAddress;
-    private int _attemptCount;
     private DateTime _nextClickAt = DateTime.MinValue;
     private DateTime _commitmentExpiresAt = DateTime.MaxValue;
 
-    // Items this task has already given up on. Without this, giving up just frees the task to
-    // re-acquire the same item on the very next tick, which is its own infinite loop.
-    private readonly HashSet<long> _abandonedItems = new();
+    // Quest items the leader has been near this zone - once listed, we go grab it regardless of
+    // where the leader is now. Cleared on area change.
+    private readonly HashSet<long> _leaderWasNear = new();
+    // Items we gave up on, so we don't immediately re-acquire the same one.
+    private readonly HashSet<long> _abandoned = new();
 
     public bool TryExecute(FollowTaskContext context)
     {
         if (!FollowHer.Instance.Settings.Movement.Tasks.PickUpQuestItems) return false;
         if (context.GameController.Area?.CurrentArea?.IsHideout == true) return false;
 
-        // Prefer the item already committed to, looked up by address - not whatever happens to be
-        // nearest this tick, which can flip as the follower moves.
-        var questItem = _currentItemAddress != 0
-            ? FindQuestItemByAddress(context.GameController, _currentItemAddress)
+        var labels = FindQuestItemLabels(context.GameController);
+
+        // Remember which quest items the leader is/was near (measured against the live leader
+        // position, or where they were last seen once they're gone).
+        var anchor = context.LeaderProximityAnchor;
+        if (anchor != null)
+        {
+            var range = FollowHer.Instance.Settings.Movement.Tasks.LeaderProximityRange.Value;
+            foreach (var l in labels)
+            {
+                if (Vector3.Distance(anchor.Value, l.ItemOnGround.PosNum) <= range)
+                    _leaderWasNear.Add(l.ItemOnGround.Address);
+            }
+        }
+
+        // Stay on the committed item as long as it's still on the ground.
+        var target = _currentItemAddress != 0
+            ? labels.FirstOrDefault(l => l.ItemOnGround.Address == _currentItemAddress)
             : null;
 
-        if (questItem == null && _currentItemAddress != 0)
+        if (target == null && _currentItemAddress != 0)
         {
-            // Committed item is gone - picked up, or out of render range. Either way we're done.
+            // Committed item is gone (picked up, or no longer labelled) - done with it.
             ClearCommitment();
         }
 
-        if (questItem == null)
+        if (target == null)
         {
-            questItem = FindNearestQuestItem(context.GameController, context.Player.PosNum, _abandonedItems);
-            if (questItem == null) return false;
+            target = AcquireTarget(context, labels);
+            if (target == null) return false;
 
-            if (!PassesAcquisitionGates(context, questItem)) return false;
-
-            _currentItemAddress = questItem.Address;
-            _attemptCount = 0;
+            _currentItemAddress = target.ItemOnGround.Address;
             _nextClickAt = DateTime.MinValue;
             _commitmentExpiresAt = DateTime.Now.AddMilliseconds(CommitmentTimeoutMs);
         }
 
-        if (_attemptCount >= MaxClickAttempts)
-        {
-            context.Manager.LogDebug("Gave up picking up quest item - too many click attempts");
-            Abandon();
-            return false;
-        }
-
         if (DateTime.Now > _commitmentExpiresAt)
         {
-            context.Manager.LogDebug("Gave up picking up quest item - took too long to reach it");
+            context.Manager.LogDebug("Gave up picking up quest item - took too long");
             Abandon();
             return false;
         }
 
-        var distance = Vector3.Distance(context.Player.PosNum, questItem.PosNum);
-        if (distance > ApproachTolerance)
+        var item = target.ItemOnGround;
+        var labelVisible = target.Label is { IsValid: true, IsVisible: true };
+
+        if (labelVisible)
         {
-            return context.Manager.ExecuteMovement(questItem.PosNum, questItem.GridPosNum);
+            // Between clicks, hold position - the game is already walking us to the item from the
+            // last click. Don't issue movement, or it fights the click-to-move.
+            if (DateTime.Now < _nextClickAt) return true;
+
+            if (context.Manager.HasWalkablePathTo(item.GridPosNum))
+            {
+                context.Manager.LogDebug($"Clicking quest item '{item.Metadata}'");
+                context.Manager.ClickElement(target.Label);
+                _nextClickAt = DateTime.Now.AddMilliseconds(ClickCooldownMs);
+                return true;
+            }
         }
 
-        // In range but the label hasn't rendered yet - hold the commitment rather than falling
-        // through to follow, which would walk us back out of range again.
-        var label = FindGroundLabel(context.GameController, questItem);
-        if (label == null) return true;
-
-        if (DateTime.Now < _nextClickAt) return true;
-
-        context.Manager.LogDebug($"Picking up quest item '{questItem.Metadata}'");
-        context.Manager.ClickElement(label.Label);
-        _attemptCount++;
-        _nextClickAt = DateTime.Now.AddMilliseconds(ClickCooldownMs);
-        return true;
+        // Can't just click yet (item off-screen, or no walkable path the game could use) - close
+        // the distance ourselves, then re-evaluate.
+        return context.Manager.ExecuteMovement(item.PosNum, item.GridPosNum);
     }
 
-    // Only consulted before committing to an item, never while pursuing one.
-    private static bool PassesAcquisitionGates(FollowTaskContext context, Entity questItem)
+    // Only quest items the leader has been near, within our pickup range, not already abandoned.
+    private LabelOnGround AcquireTarget(FollowTaskContext context, List<LabelOnGround> labels)
     {
-        var settings = FollowHer.Instance.Settings.Movement.Tasks;
+        var pickupRange = FollowHer.Instance.Settings.Movement.Tasks.QuestItemPickupRange.Value;
+        var playerPos = context.Player.PosNum;
 
-        var distance = Vector3.Distance(context.Player.PosNum, questItem.PosNum);
-        if (distance >= settings.QuestItemPickupRange.Value) return false;
-
-        // Only chase this item if the leader is actually near it - otherwise the follower would
-        // wander off toward stray quest items the leader has no intention of picking up.
-        if (context.LeaderEntity == null) return false;
-        return Vector3.Distance(context.LeaderEntity.PosNum, questItem.PosNum) <= settings.LeaderProximityRange.Value;
+        return labels
+            .Where(l => !_abandoned.Contains(l.ItemOnGround.Address) &&
+                        _leaderWasNear.Contains(l.ItemOnGround.Address) &&
+                        Vector3.Distance(playerPos, l.ItemOnGround.PosNum) < pickupRange)
+            .OrderBy(l => Vector3.Distance(playerPos, l.ItemOnGround.PosNum))
+            .FirstOrDefault();
     }
 
     private void Abandon()
     {
-        if (_currentItemAddress != 0) _abandonedItems.Add(_currentItemAddress);
+        if (_currentItemAddress != 0) _abandoned.Add(_currentItemAddress);
         ClearCommitment();
     }
 
     private void ClearCommitment()
     {
         _currentItemAddress = 0;
-        _attemptCount = 0;
         _nextClickAt = DateTime.MinValue;
         _commitmentExpiresAt = DateTime.MaxValue;
     }
@@ -130,42 +136,24 @@ public class QuestItemPickupTask : IFollowTask
     public void Reset()
     {
         ClearCommitment();
-        _abandonedItems.Clear();
+        _leaderWasNear.Clear();
+        _abandoned.Clear();
     }
 
-    private static Entity FindNearestQuestItem(GameController gameController, Vector3 playerPos, HashSet<long> exclude)
+    private static List<LabelOnGround> FindQuestItemLabels(GameController gameController)
     {
         try
         {
             return gameController.Game?.IngameState?.IngameUi?.ItemsOnGroundLabels?
-                .Where(x => x != null && x.IsVisible && x.Label is { IsValid: true, IsVisible: true } &&
-                            x.ItemOnGround != null && x.ItemOnGround.Type == EntityType.WorldItem &&
-                            x.ItemOnGround.IsTargetable && x.ItemOnGround.HasComponent<WorldItem>() &&
-                            !exclude.Contains(x.ItemOnGround.Address) &&
+                .Where(x => x != null && x.Label is { IsValid: true } && x.ItemOnGround != null &&
+                            x.ItemOnGround.Type == EntityType.WorldItem && x.ItemOnGround.IsTargetable &&
+                            x.ItemOnGround.HasComponent<WorldItem>() &&
                             IsQuestItem(gameController, x.ItemOnGround))
-                .Select(x => x.ItemOnGround)
-                .OrderBy(x => Vector3.Distance(playerPos, x.PosNum))
-                .FirstOrDefault();
+                .ToList() ?? new List<LabelOnGround>();
         }
         catch
         {
-            return null;
-        }
-    }
-
-    private static Entity FindQuestItemByAddress(GameController gameController, long address)
-    {
-        try
-        {
-            return gameController.Game?.IngameState?.IngameUi?.ItemsOnGroundLabels?
-                .Where(x => x != null && x.ItemOnGround != null && x.ItemOnGround.Address == address &&
-                            x.ItemOnGround.IsTargetable)
-                .Select(x => x.ItemOnGround)
-                .FirstOrDefault();
-        }
-        catch
-        {
-            return null;
+            return new List<LabelOnGround>();
         }
     }
 
@@ -181,11 +169,5 @@ public class QuestItemPickupTask : IFollowTask
         {
             return false;
         }
-    }
-
-    private static LabelOnGround FindGroundLabel(GameController gameController, Entity item)
-    {
-        return gameController.Game?.IngameState?.IngameUi?.ItemsOnGroundLabels?
-            .FirstOrDefault(x => x.IsVisible && x.ItemOnGround?.Address == item.Address);
     }
 }

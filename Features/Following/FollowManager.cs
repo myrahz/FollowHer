@@ -46,6 +46,9 @@ public class FollowManager
     // Updated whenever the leader entity is visible - fallback target once they're no longer
     // directly resolvable (still believed to be in the same zone).
     private (int x, int y)? _lastKnownLeaderGrid;
+    // Same idea in world coordinates - used as the proximity anchor for quest tasks so they can
+    // still tell "the leader was near this quest" after the leader has moved off or left the zone.
+    private Vector3? _lastKnownLeaderWorldPos;
 
     private List<(int x, int y)> _currentPath;
     private int _currentPathIndex;
@@ -132,7 +135,8 @@ public class FollowManager
 
             if (!blockMovementInTown)
             {
-                var taskContext = new FollowTaskContext(_gameController, player, this, leaderEntity);
+                var taskContext = new FollowTaskContext(_gameController, player, this, leaderEntity,
+                    leaderEntity?.PosNum ?? _lastKnownLeaderWorldPos);
                 foreach (var task in _tasks)
                 {
                     if (task.TryExecute(taskContext))
@@ -175,25 +179,37 @@ public class FollowManager
                 var jumpThreshold = settings.LeaderTeleportJumpDistance.Value;
                 if (jumpThreshold > 0 && _lastKnownLeaderGrid.HasValue)
                 {
-                    var prevGrid = _lastKnownLeaderGrid.Value;
-                    var jumpWorld = Vector2.Distance(
-                        new Vector2(prevGrid.x, prevGrid.y),
-                        new Vector2(newGrid.x, newGrid.y)) * GridToWorldMultiplier;
-
-                    if (jumpWorld > jumpThreshold)
+                    // Nearby takes priority over the jump heuristic: if the leader is right next to
+                    // us now, they're clearly here - a big prev->new delta is a stale/edge read
+                    // snapping back, NOT a transition. Only consider it a jump when the leader also
+                    // ended up far from us (they actually went somewhere).
+                    var currentDistanceToLeader = Vector3.Distance(player.PosNum, leaderEntity.PosNum);
+                    if (currentDistanceToLeader > jumpThreshold)
                     {
-                        LogDebug($"Leader position jumped {jumpWorld:F0} (> {jumpThreshold}) in one update - treating as a transition at their previous position");
-                        // Keep _lastKnownLeaderGrid at the pre-jump spot (don't adopt the far
-                        // reading) so we stay committed to finding the transition there; the entity
-                        // usually goes null a tick or two later and normal transition-following
-                        // takes over from the same anchor.
-                        _lastPathfindableLeaderGrid = prevGrid;
-                        return TryFollowThroughRecentPortal(player.PosNum, prevGrid);
+                        var prevGrid = _lastKnownLeaderGrid.Value;
+                        var jumpWorld = Vector2.Distance(
+                            new Vector2(prevGrid.x, prevGrid.y),
+                            new Vector2(newGrid.x, newGrid.y)) * GridToWorldMultiplier;
+
+                        // ...and only if we also can't actually path to where they now read. If a
+                        // walkable route to the far position exists, they're reachable - just follow
+                        // it. So this fires only when the leader is far AND jumped AND unreachable.
+                        if (jumpWorld > jumpThreshold && !HasWalkablePath(RoundGrid(player.GridPosNum), newGrid))
+                        {
+                            LogDebug($"Leader position jumped {jumpWorld:F0} (> {jumpThreshold}), now {currentDistanceToLeader:F0} away and unreachable - treating as a transition at their previous position");
+                            // Keep _lastKnownLeaderGrid at the pre-jump spot (don't adopt the far
+                            // reading) so we stay committed to finding the transition there; the
+                            // entity usually goes null a tick or two later and normal
+                            // transition-following takes over from the same anchor.
+                            _lastPathfindableLeaderGrid = prevGrid;
+                            return TryFollowThroughRecentPortal(player.PosNum, prevGrid);
+                        }
                     }
                 }
 
                 targetGrid = newGrid;
                 _lastKnownLeaderGrid = targetGrid;
+                _lastKnownLeaderWorldPos = leaderEntity.PosNum;
                 _lastKnownLeaderZone = "";
                 _leaderZoneChangeTime = DateTime.MinValue;
             }
@@ -310,6 +326,27 @@ public class FollowManager
         }
 
         return _pursuitMode.Value;
+    }
+
+    // Whether A* can find any walkable route from start to target. Used by the leader-jump check to
+    // avoid treating a big position jump as a transition when the leader is actually still
+    // reachable. Only called in that (rare, leader-is-far) path, so the extra A* isn't per-tick.
+    private bool HasWalkablePath((int x, int y) start, (int x, int y) target)
+    {
+        var grid = _lineOfSight.GetGrid(LineOfSightDataType.Walkable);
+        if (grid == null) return false;
+
+        var path = GridPathfinder.AStar(grid, start, target, MaxPathSearchNodes);
+        return path is { Count: > 0 };
+    }
+
+    // Whether there's a walkable route from the player to a target grid cell. Exposed for quest
+    // tasks: once they can see a quest and confirm a path, they just click it and let the game walk
+    // there, rather than issuing their own movement (which fought the game's click-to-move).
+    internal bool HasWalkablePathTo(Vector2 targetGridPos)
+    {
+        if (_gameController.Player == null) return false;
+        return HasWalkablePath(RoundGrid(_gameController.Player.GridPosNum), RoundGrid(targetGridPos));
     }
 
     private bool TryFollowPathToTarget(Entity player, (int x, int y) target, MovementSettings settings, bool leaderVisible)
@@ -1064,6 +1101,7 @@ public class FollowManager
     private void ClearState()
     {
         _lastKnownLeaderGrid = null;
+        _lastKnownLeaderWorldPos = null;
         _currentPath = null;
         _currentPathIndex = 0;
         _currentPathTarget = null;

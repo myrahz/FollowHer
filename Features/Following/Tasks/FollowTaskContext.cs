@@ -1,3 +1,4 @@
+using System.Numerics;
 using ExileCore;
 using ExileCore.PoEMemory.MemoryObjects;
 
@@ -12,11 +13,21 @@ public class FollowTaskContext
     public FollowManager Manager { get; }
     public Entity LeaderEntity { get; }
 
-    public FollowTaskContext(GameController gameController, Entity player, FollowManager manager, Entity leaderEntity)
+    /// <summary>Where to measure "is the leader near this quest" from: the live leader position
+    /// when they're visible, otherwise where they were last seen. Null only if the leader has never
+    /// been seen this zone. Using the last-seen position when the entity is gone lets quest tasks
+    /// still fire for a quest the leader was standing next to when they stepped through a transition
+    /// - so the follower grabs it BEFORE teleporting after them (it can't acquire the quest state
+    /// from the other side of the transition).</summary>
+    public Vector3? LeaderProximityAnchor { get; }
+
+    public FollowTaskContext(GameController gameController, Entity player, FollowManager manager,
+        Entity leaderEntity, Vector3? leaderProximityAnchor)
     {
         GameController = gameController;
         Player = player;
         Manager = manager;
         LeaderEntity = leaderEntity;
+        LeaderProximityAnchor = leaderProximityAnchor;
     }
 }
