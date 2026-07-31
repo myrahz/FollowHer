@@ -22,9 +22,9 @@ namespace FollowHer.Features.Following.Tasks;
 ///    own movement on top of that fought the game and made the pickup stutter.</summary>
 public class QuestItemPickupTask : IFollowTask
 {
-    private const int ClickCooldownMs = 800;
+    private const int ClickCooldownMs = 4000;
     private const int CommitmentTimeoutMs = 20000;
-    private const float InteractionApproachDistance = 70f;
+    private const float InteractionApproachDistance = 150f;
 
     private long _currentItemAddress;
     private DateTime _nextClickAt = DateTime.MinValue;
@@ -87,6 +87,10 @@ public class QuestItemPickupTask : IFollowTask
         var item = target.ItemOnGround;
         var labelVisible = target.Label is { IsValid: true, IsVisible: true };
 
+        // Once an interaction was clicked, let the game's click-to-move own the character for the
+        // whole grace period. In particular, do not run our approach logic or release Move here.
+        if (DateTime.Now < _nextClickAt) return true;
+
         if (labelVisible)
         {
             // Approach explicitly instead of clicking a moving label from a distance. Camera
@@ -97,8 +101,6 @@ public class QuestItemPickupTask : IFollowTask
                 context.Manager.ResetInteractionSettling();
                 return context.Manager.ExecuteMovement(item.PosNum, item.GridPosNum);
             }
-
-            if (DateTime.Now < _nextClickAt) return true;
 
             if (context.Manager.HasWalkablePathTo(item.GridPosNum))
             {

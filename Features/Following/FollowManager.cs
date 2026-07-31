@@ -540,6 +540,10 @@ public class FollowManager
         }
 
         var target = transition.Value;
+        // A transition click can start click-to-move. During its grace period, do not re-enter the
+        // approach code and steer the player toward the portal's exact (often blocked) position.
+        if (DateTime.Now < _nextPortalClickAt) return true;
+
         var distanceToPortal = Vector3.Distance(playerPos, target.WorldPos);
         var approachDistance = FollowHer.Instance.Settings.Movement.PortalApproachDistance.Value;
         if (distanceToPortal > approachDistance)
@@ -548,7 +552,6 @@ public class FollowManager
             return ExecuteMovement(target.WorldPos, target.GridPos);
         }
 
-        if (DateTime.Now < _nextPortalClickAt) return true;
         if (!IsPlayerSettledForInteraction()) return true;
 
         LogDebug("Found a transition near where the leader was last seen - clicking it");
@@ -614,6 +617,10 @@ public class FollowManager
 
     private bool TryWalkToZoneTransitionPortal(LabelOnGround portal, Vector3 playerPos)
     {
+        // Let a previous label click finish its own click-to-move before making any new movement
+        // decision. Checking this after distance was the source of a post-click correction loop.
+        if (DateTime.Now < _nextPortalClickAt) return true;
+
         var distanceToPortal = Vector3.Distance(playerPos, portal.ItemOnGround.PosNum);
         var approachDistance = FollowHer.Instance.Settings.Movement.PortalApproachDistance.Value;
         if (distanceToPortal > approachDistance)
@@ -622,7 +629,6 @@ public class FollowManager
             return ExecuteMovement(portal.ItemOnGround.PosNum, portal.ItemOnGround.GridPosNum);
         }
 
-        if (DateTime.Now < _nextPortalClickAt) return true;
         if (!IsPlayerSettledForInteraction()) return true;
 
         LogDebug("Walking to and clicking the zone transition");
@@ -874,10 +880,14 @@ public class FollowManager
         var portal = GetBestPortalLabel(leaderZoneName, referencePosition);
         if (portal == null) return true;
 
+        // This label click may walk the player all the way to the portal. The former 500 ms retry
+        // stopped that movement and clicked the now-shifted label again, producing the same
+        // overshoot/circle loop as quest interactions.
+        if (!IsPlayerSettledForInteraction()) return true;
+
         LogDebug($"Found matching portal for zone '{leaderZoneName}' - clicking");
-        StopMovement();
         ClickElement(portal.Label);
-        _nextTpActionAt = DateTime.Now.AddMilliseconds(500);
+        _nextTpActionAt = DateTime.Now.AddMilliseconds(4000);
         return true;
     }
 

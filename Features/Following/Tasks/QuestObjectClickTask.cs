@@ -16,9 +16,9 @@ namespace FollowHer.Features.Following.Tasks;
 /// ourselves. Objects with no ground label fall back to approach-then-click at their world position.</summary>
 public class QuestObjectClickTask : IFollowTask
 {
-    private const int ClickCooldownMs = 800;
+    private const int ClickCooldownMs = 4000;
     private const int CommitmentTimeoutMs = 20000;
-    private const float InteractionApproachDistance = 80f;
+    private const float InteractionApproachDistance = 150f;
 
     private long _currentObjectAddress;
     private DateTime _nextClickAt = DateTime.MinValue;
@@ -70,6 +70,10 @@ public class QuestObjectClickTask : IFollowTask
         var label = FindGroundLabel(context.GameController, target);
         var labelVisible = label?.Label is { IsValid: true, IsVisible: true };
 
+        // The click may legitimately start the game's own click-to-move. Give it enough time to
+        // finish without our approach/settling code cancelling or redirecting that movement.
+        if (DateTime.Now < _nextClickAt) return true;
+
         var distanceToObject = Vector3.Distance(context.Player.PosNum, target.PosNum);
         if (distanceToObject > InteractionApproachDistance)
         {
@@ -80,7 +84,6 @@ public class QuestObjectClickTask : IFollowTask
         // We stop at the approach radius above, rather than trying to occupy the object's often
         // blocked cell. Once there, wait for the camera to settle before resolving the label's
         // screen rectangle and clicking it.
-        if (DateTime.Now < _nextClickAt) return true;
         if (!context.Manager.IsPlayerSettledForInteraction()) return true;
 
         if (labelVisible)
