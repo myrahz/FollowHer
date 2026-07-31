@@ -89,7 +89,7 @@ public class QuestObjectClickTask : IFollowTask
         if (labelVisible)
         {
             context.Manager.LogDebug($"Clicking quest object '{target.Metadata}'");
-            context.Manager.ClickElement(label.Label);
+            if (!context.Manager.TryClickInteractionElement(label.Label)) return true;
             _nextClickAt = DateTime.Now.AddMilliseconds(ClickCooldownMs);
             return true;
         }

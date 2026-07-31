@@ -106,7 +106,7 @@ public class QuestItemPickupTask : IFollowTask
             {
                 if (!context.Manager.IsPlayerSettledForInteraction()) return true;
                 context.Manager.LogDebug($"Clicking quest item '{item.Metadata}'");
-                context.Manager.ClickElement(target.Label);
+                if (!context.Manager.TryClickInteractionElement(target.Label)) return true;
                 _nextClickAt = DateTime.Now.AddMilliseconds(ClickCooldownMs);
                 return true;
             }

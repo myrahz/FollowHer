@@ -71,9 +71,14 @@ public class FollowManager
     private Vector3? _lastMoveTargetWorld;
     private Vector3? _interactionPositionSample;
     private DateTime _interactionStableSince = DateTime.MinValue;
+    private long _hoverElementAddress;
+    private Vector2 _hoverScreenPosition;
+    private DateTime _hoverStartedAt = DateTime.MinValue;
 
     private const int InteractionSettleTimeMs = 200;
     private const float InteractionMovementTolerance = 3f;
+    private const int ElementHoverTimeMs = 180;
+    private const float HoverPositionTolerance = 3f;
 
     // Sticky direct-walk-vs-pathfind decision - a single noisy LOS raycast right at a
     // corner/doorway edge shouldn't be able to flip the movement target every tick.
@@ -558,7 +563,16 @@ public class FollowManager
         // Release any held movement input first - a still-held Move key/mouse button can swallow
         // or override the click that follows.
         StopMovement();
-        ClickTransition(target);
+        if (target.Label != null)
+        {
+            if (!TryClickInteractionElement(target.Label)) return true;
+        }
+        else
+        {
+            // Some doorway transitions have no UI label to hover; their only usable target is the
+            // projected world position.
+            ClickWorldPosition(target.WorldPos);
+        }
         _portalClickAttempts++;
         _nextPortalClickAt = DateTime.Now.AddMilliseconds(PortalClickCooldownMs);
         return true;
@@ -635,7 +649,7 @@ public class FollowManager
         // Release any held movement input first - a still-held Move key/mouse button can swallow
         // or override the click that follows.
         StopMovement();
-        ClickElement(portal.Label);
+        if (!TryClickInteractionElement(portal.Label)) return true;
         _nextPortalClickAt = DateTime.Now.AddMilliseconds(PortalClickCooldownMs);
         return true;
     }
@@ -721,14 +735,6 @@ public class FollowManager
             if (seen.Add(grid))
                 yield return new TransitionTarget(entity.PosNum, entity.GridPosNum, null);
         }
-    }
-
-    private void ClickTransition(TransitionTarget target)
-    {
-        if (target.Label != null)
-            ClickElement(target.Label);
-        else
-            ClickWorldPosition(target.WorldPos);
     }
 
     private LabelOnGround GetBestPortalLabel(string leaderZoneName, Vector3 referencePosition)
@@ -886,7 +892,7 @@ public class FollowManager
         if (!IsPlayerSettledForInteraction()) return true;
 
         LogDebug($"Found matching portal for zone '{leaderZoneName}' - clicking");
-        ClickElement(portal.Label);
+        if (!TryClickInteractionElement(portal.Label)) return true;
         _nextTpActionAt = DateTime.Now.AddMilliseconds(4000);
         return true;
     }
@@ -914,6 +920,55 @@ public class FollowManager
 
         ExileCore.Input.SetCursorPos(position);
         ExileCore.Input.Click(MouseButtons.Left);
+    }
+
+    // Move and click must happen on separate ticks. Moving the OS cursor and clicking immediately
+    // can hit the label's previous rectangle before the game has processed hover. Recompute the
+    // live rectangle every tick; if it moved with the camera, restart the dwell at its new center.
+    internal bool TryClickInteractionElement(Element element)
+    {
+        if (element is not { IsValid: true, IsVisible: true })
+        {
+            ResetElementHover();
+            return false;
+        }
+
+        var rect = element.GetClientRect();
+        var windowTopLeft = _gameController.Window.GetWindowRectangle().TopLeft.ToVector2Num();
+        var position = new Vector2(rect.X + rect.Width / 2f, rect.Y + rect.Height / 2f) + windowTopLeft;
+        var address = element.Address;
+        var now = DateTime.Now;
+
+        if (_hoverElementAddress != address ||
+            Vector2.Distance(_hoverScreenPosition, position) > HoverPositionTolerance)
+        {
+            _hoverElementAddress = address;
+            _hoverScreenPosition = position;
+            _hoverStartedAt = now;
+            ExileCore.Input.SetCursorPos(position);
+            return false;
+        }
+
+        // User input or another subsystem may have moved the cursor after our previous tick.
+        if (Vector2.Distance(ExileCore.Input.MousePositionNum, position) > HoverPositionTolerance)
+        {
+            _hoverStartedAt = now;
+            ExileCore.Input.SetCursorPos(position);
+            return false;
+        }
+
+        if (now - _hoverStartedAt < TimeSpan.FromMilliseconds(ElementHoverTimeMs)) return false;
+
+        ExileCore.Input.Click(MouseButtons.Left);
+        ResetElementHover();
+        return true;
+    }
+
+    private void ResetElementHover()
+    {
+        _hoverElementAddress = 0;
+        _hoverScreenPosition = Vector2.Zero;
+        _hoverStartedAt = DateTime.MinValue;
     }
 
     // Same click mechanics as ClickElement, but for a raw world entity with no ground label -
@@ -1165,6 +1220,7 @@ public class FollowManager
         _nextMovementInputAt = DateTime.MinValue;
         _lastMoveTargetWorld = null;
         ResetInteractionSettling();
+        ResetElementHover();
         _pursuitMode = null;
         _pursuitModeLockedUntil = DateTime.MinValue;
 
