@@ -18,6 +18,7 @@ public class QuestObjectClickTask : IFollowTask
 {
     private const int ClickCooldownMs = 800;
     private const int CommitmentTimeoutMs = 20000;
+    private const float InteractionApproachDistance = 80f;
 
     private long _currentObjectAddress;
     private DateTime _nextClickAt = DateTime.MinValue;
@@ -69,11 +70,18 @@ public class QuestObjectClickTask : IFollowTask
         var label = FindGroundLabel(context.GameController, target);
         var labelVisible = label?.Label is { IsValid: true, IsVisible: true };
 
-        // Never walk onto the object - it's an obstacle with a hitbox, so trying to reach its exact
-        // cell just leaves us stuck against it (and A* can't route to a blocked cell either, which
-        // is why we don't gate this on a path check). Just click it and let the game's click-to-move
-        // pathfind up to its interaction range. Between clicks, hold so we don't fight that.
+        var distanceToObject = Vector3.Distance(context.Player.PosNum, target.PosNum);
+        if (distanceToObject > InteractionApproachDistance)
+        {
+            context.Manager.ResetInteractionSettling();
+            return context.Manager.ExecuteMovement(target.PosNum, target.GridPosNum);
+        }
+
+        // We stop at the approach radius above, rather than trying to occupy the object's often
+        // blocked cell. Once there, wait for the camera to settle before resolving the label's
+        // screen rectangle and clicking it.
         if (DateTime.Now < _nextClickAt) return true;
+        if (!context.Manager.IsPlayerSettledForInteraction()) return true;
 
         if (labelVisible)
         {

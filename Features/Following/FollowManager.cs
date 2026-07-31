@@ -69,6 +69,11 @@ public class FollowManager
 
     private DateTime _nextMovementInputAt = DateTime.MinValue;
     private Vector3? _lastMoveTargetWorld;
+    private Vector3? _interactionPositionSample;
+    private DateTime _interactionStableSince = DateTime.MinValue;
+
+    private const int InteractionSettleTimeMs = 200;
+    private const float InteractionMovementTolerance = 3f;
 
     // Sticky direct-walk-vs-pathfind decision - a single noisy LOS raycast right at a
     // corner/doorway edge shouldn't be able to flip the movement target every tick.
@@ -349,6 +354,35 @@ public class FollowManager
         return HasWalkablePath(RoundGrid(_gameController.Player.GridPosNum), RoundGrid(targetGridPos));
     }
 
+    // Ground labels are screen-space UI attached to world entities. While the player/camera is
+    // moving their rectangles move too, so repeatedly clicking one can alternately issue movement
+    // commands to either side of the entity. Release movement and require a short, measured period
+    // of positional stability before an interaction click is allowed.
+    internal bool IsPlayerSettledForInteraction()
+    {
+        StopMovement();
+
+        var player = _gameController.Player;
+        if (player == null) return false;
+
+        var now = DateTime.Now;
+        if (!_interactionPositionSample.HasValue ||
+            Vector3.Distance(_interactionPositionSample.Value, player.PosNum) > InteractionMovementTolerance)
+        {
+            _interactionPositionSample = player.PosNum;
+            _interactionStableSince = now;
+            return false;
+        }
+
+        return now - _interactionStableSince >= TimeSpan.FromMilliseconds(InteractionSettleTimeMs);
+    }
+
+    internal void ResetInteractionSettling()
+    {
+        _interactionPositionSample = null;
+        _interactionStableSince = DateTime.MinValue;
+    }
+
     private bool TryFollowPathToTarget(Entity player, (int x, int y) target, MovementSettings settings, bool leaderVisible)
     {
         var start = RoundGrid(player.GridPosNum);
@@ -510,10 +544,12 @@ public class FollowManager
         var approachDistance = FollowHer.Instance.Settings.Movement.PortalApproachDistance.Value;
         if (distanceToPortal > approachDistance)
         {
+            ResetInteractionSettling();
             return ExecuteMovement(target.WorldPos, target.GridPos);
         }
 
         if (DateTime.Now < _nextPortalClickAt) return true;
+        if (!IsPlayerSettledForInteraction()) return true;
 
         LogDebug("Found a transition near where the leader was last seen - clicking it");
         // Release any held movement input first - a still-held Move key/mouse button can swallow
@@ -582,10 +618,12 @@ public class FollowManager
         var approachDistance = FollowHer.Instance.Settings.Movement.PortalApproachDistance.Value;
         if (distanceToPortal > approachDistance)
         {
+            ResetInteractionSettling();
             return ExecuteMovement(portal.ItemOnGround.PosNum, portal.ItemOnGround.GridPosNum);
         }
 
         if (DateTime.Now < _nextPortalClickAt) return true;
+        if (!IsPlayerSettledForInteraction()) return true;
 
         LogDebug("Walking to and clicking the zone transition");
         // Release any held movement input first - a still-held Move key/mouse button can swallow
@@ -1116,6 +1154,7 @@ public class FollowManager
         _tpButtonClickedAt = null;
         _nextMovementInputAt = DateTime.MinValue;
         _lastMoveTargetWorld = null;
+        ResetInteractionSettling();
         _pursuitMode = null;
         _pursuitModeLockedUntil = DateTime.MinValue;
 

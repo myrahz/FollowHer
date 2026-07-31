@@ -24,6 +24,7 @@ public class QuestItemPickupTask : IFollowTask
 {
     private const int ClickCooldownMs = 800;
     private const int CommitmentTimeoutMs = 20000;
+    private const float InteractionApproachDistance = 70f;
 
     private long _currentItemAddress;
     private DateTime _nextClickAt = DateTime.MinValue;
@@ -88,12 +89,20 @@ public class QuestItemPickupTask : IFollowTask
 
         if (labelVisible)
         {
-            // Between clicks, hold position - the game is already walking us to the item from the
-            // last click. Don't issue movement, or it fights the click-to-move.
+            // Approach explicitly instead of clicking a moving label from a distance. Camera
+            // movement shifts the label between retries and can turn those retries into opposing
+            // click-to-move commands around the item.
+            if (Vector3.Distance(context.Player.PosNum, item.PosNum) > InteractionApproachDistance)
+            {
+                context.Manager.ResetInteractionSettling();
+                return context.Manager.ExecuteMovement(item.PosNum, item.GridPosNum);
+            }
+
             if (DateTime.Now < _nextClickAt) return true;
 
             if (context.Manager.HasWalkablePathTo(item.GridPosNum))
             {
+                if (!context.Manager.IsPlayerSettledForInteraction()) return true;
                 context.Manager.LogDebug($"Clicking quest item '{item.Metadata}'");
                 context.Manager.ClickElement(target.Label);
                 _nextClickAt = DateTime.Now.AddMilliseconds(ClickCooldownMs);
