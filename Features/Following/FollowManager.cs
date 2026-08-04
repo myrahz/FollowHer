@@ -448,9 +448,17 @@ public class FollowManager
                 return TryFollowThroughRecentPortal(player.PosNum, target);
             }
 
-            // The leader is still visible - A* just couldn't reach their exact cell (they're often
-            // standing on a cell it treats as blocked). They haven't gone anywhere, so DON'T hunt
-            // for a transition; walk straight toward them instead.
+            // Short-range teleporters can leave the leader visible only a few metres away, so the
+            // large-jump heuristic never fires. If A* says that visible leader is unreachable and
+            // a transition is near either side of the gap, use it instead of walking into the wall.
+            if (TryGetTransitionAnchorForUnreachableLeader(player, target, out var transitionAnchor))
+            {
+                LogDebug("Leader is visible but unreachable and a nearby transition exists - using the transition");
+                return TryFollowThroughRecentPortal(player.PosNum, transitionAnchor);
+            }
+
+            // No transition is visible. The common remaining case is that the leader's exact cell
+            // is classified as blocked, so retain the direct-walk fallback for that case only.
             return ExecuteMovement(GridToWorldPosition(target.x, target.y), new Vector2(target.x, target.y));
         }
 
@@ -492,6 +500,37 @@ public class FollowManager
         if (drift <= PathRetargetThresholdGrid) return false;
 
         return DateTime.Now >= _nextPathRecomputeAt;
+    }
+
+    private bool TryGetTransitionAnchorForUnreachableLeader(Entity player, (int x, int y) leaderTarget,
+        out (int x, int y) transitionAnchor)
+    {
+        var radius = FollowHer.Instance.Settings.Movement.TransitionSearchRadius.Value;
+
+        // Prefer the follower's side. Paired teleporters may expose an entity at both ends; using
+        // the leader-side endpoint as our search anchor would send us straight through the wall.
+        if (FindNearbyTransition(player.PosNum, radius) != null)
+        {
+            transitionAnchor = RoundGrid(player.GridPosNum);
+            return true;
+        }
+
+        if (_lastPathfindableLeaderGrid is { } anchor &&
+            FindNearbyTransition(GridToWorldPosition(anchor.x, anchor.y), radius) != null)
+        {
+            transitionAnchor = anchor;
+            return true;
+        }
+
+        var leaderWorld = GridToWorldPosition(leaderTarget.x, leaderTarget.y);
+        if (FindNearbyTransition(leaderWorld, radius) != null)
+        {
+            transitionAnchor = leaderTarget;
+            return true;
+        }
+
+        transitionAnchor = default;
+        return false;
     }
 
     // Pathfinding to the leader's believed position just failed while we still think we're in the
