@@ -34,10 +34,6 @@ public class FollowManager
     // matching the constant already used by other plugins in this install, e.g. Radar.cs).
     private const float GridToWorldMultiplier = 250f / 23f;
     private const int PursuitModeSwitchCooldownMs = 500;
-    private const float FormationStartRatio = 0.8f;
-    private const float FormationStopRatio = 0.5f;
-    private const float MinFormationStartDistance = 45f;
-    private const float MinFormationStopDistance = 25f;
 
     private enum PursuitMode { Direct, Pathfind }
 
@@ -91,7 +87,6 @@ public class FollowManager
     // corner/doorway edge shouldn't be able to flip the movement target every tick.
     private PursuitMode? _pursuitMode;
     private DateTime _pursuitModeLockedUntil = DateTime.MinValue;
-    private bool _formationPursuitActive;
 
     // Side-tasks checked (in order) before any follow/movement decision each tick - add new
     // IFollowTask implementations here to extend what Follow can do besides move/attack.
@@ -226,7 +221,6 @@ public class FollowManager
             }
 
             (int x, int y)? targetGrid;
-            Vector3? visibleFollowTargetWorld = null;
 
             if (leaderEntity != null)
             {
@@ -269,13 +263,8 @@ public class FollowManager
                     }
                 }
 
-                var formationTarget = GetFormationTarget(player, leaderEntity, leaderName, settings.FollowerSpacing.Value);
-                targetGrid = formationTarget.grid;
-                visibleFollowTargetWorld = formationTarget.world;
-
-                // Transition discovery must retain the leader's real position. The formation slot
-                // is only a same-zone movement target and must never become a portal-search anchor.
-                _lastKnownLeaderGrid = newGrid;
+                targetGrid = newGrid;
+                _lastKnownLeaderGrid = targetGrid;
                 _lastKnownLeaderWorldPos = leaderEntity.PosNum;
                 _lastKnownLeaderZone = "";
                 _leaderZoneChangeTime = DateTime.MinValue;
@@ -295,34 +284,12 @@ public class FollowManager
             if (leaderEntity != null)
             {
                 var distanceToLeader = Vector3.Distance(player.PosNum, leaderEntity.PosNum);
-                var distanceToFormation = Vector3.Distance(player.PosNum, visibleFollowTargetWorld.Value);
-                bool shouldMove;
-                if (settings.FollowerSpacing.Value > 0)
-                {
-                    var formationStartDistance = Math.Max(MinFormationStartDistance,
-                        settings.FollowerSpacing.Value * FormationStartRatio);
-                    var formationStopDistance = Math.Max(MinFormationStopDistance,
-                        settings.FollowerSpacing.Value * FormationStopRatio);
+                var shouldMove = distanceToLeader >= settings.TransitionDistance ||
+                                  (distanceToLeader >= settings.KeepWithinDistance && settings.CloseFollow);
 
-                    if (_formationPursuitActive)
-                        _formationPursuitActive = distanceToFormation > formationStopDistance;
-                    else
-                        _formationPursuitActive = distanceToFormation >= formationStartDistance;
+                LogDebug($"Leader visible, distance={distanceToLeader:F0}, shouldMove={shouldMove}");
 
-                    shouldMove = distanceToLeader >= settings.TransitionDistance ||
-                                 (settings.CloseFollow && _formationPursuitActive);
-                }
-                else
-                {
-                    _formationPursuitActive = false;
-                    shouldMove = distanceToLeader >= settings.TransitionDistance ||
-                                 (distanceToLeader >= settings.KeepWithinDistance && settings.CloseFollow);
-                }
-
-                LogDebug($"Leader visible, distance={distanceToLeader:F0}, formationDistance={distanceToFormation:F0}, shouldMove={shouldMove}");
-
-                var formationGridVector = new Vector2(targetGrid.Value.x, targetGrid.Value.y);
-                var hasLineOfSight = HasClearLineOfSight(player.GridPosNum, formationGridVector);
+                var hasLineOfSight = HasClearLineOfSight(player.GridPosNum, leaderEntity.GridPosNum);
 
                 // Record the leader's position as the last reachable one whenever there's a clear
                 // walkable line to them - this is the anchor the transition-following fallback
@@ -330,9 +297,9 @@ public class FollowManager
                 // in the pathfinding branch below: a whole zone spent following in a straight line
                 // would otherwise leave this null, and stepping through a same-zone transition
                 // would never be handled (the fallback can't find a transition it has no anchor for).
-                if (HasClearLineOfSight(player.GridPosNum, leaderEntity.GridPosNum))
+                if (hasLineOfSight)
                 {
-                    _lastPathfindableLeaderGrid = newGrid;
+                    _lastPathfindableLeaderGrid = RoundGrid(leaderEntity.GridPosNum);
                 }
 
                 if (!shouldMove)
@@ -343,15 +310,13 @@ public class FollowManager
 
                 if (DeterminePursuitMode(hasLineOfSight) == PursuitMode.Direct)
                 {
-                    return ExecuteMovement(visibleFollowTargetWorld.Value, formationGridVector);
+                    return ExecuteMovement(leaderEntity.PosNum, leaderEntity.GridPosNum);
                 }
 
                 // LOS to the leader is blocked, so we'd normally take the walkable detour. But if a
                 // blink skill can punch straight through the obstacle and the detour is much longer
                 // than the straight-line hop, jump directly to them instead of pathfinding around.
-                var dashShortcut = settings.FollowerSpacing.Value == 0
-                    ? TryGetDirectDashShortcut(player, leaderEntity, settings)
-                    : null;
+                var dashShortcut = TryGetDirectDashShortcut(player, leaderEntity, settings);
                 if (dashShortcut != null)
                 {
                     LogDebug($"Dashing directly to leader with '{dashShortcut.Name}' instead of pathfinding a longer route");
@@ -438,69 +403,6 @@ public class FollowManager
     {
         if (_gameController.Player == null) return false;
         return HasWalkablePath(RoundGrid(_gameController.Player.GridPosNum), RoundGrid(targetGridPos));
-    }
-
-    private (Vector3 world, (int x, int y) grid) GetFormationTarget(Entity player, Entity leader,
-        string leaderName, float radiusWorld)
-    {
-        if (radiusWorld <= 0)
-            return (leader.PosNum, RoundGrid(leader.GridPosNum));
-
-        var localName = player.GetComponent<Player>()?.PlayerName ?? "";
-        var followers = PartyPanelScanner.GetPartyMembers(_gameController)
-            .Where(x => !string.Equals(x.PlayerName, leaderName, StringComparison.OrdinalIgnoreCase))
-            .Select(x => x.PlayerName)
-            .Where(x => !string.IsNullOrWhiteSpace(x))
-            .ToList();
-
-        var slot = followers.FindIndex(x => string.Equals(x, localName, StringComparison.OrdinalIgnoreCase));
-        var slotCount = Math.Max(1, followers.Count);
-        float angle;
-        if (slot < 0)
-        {
-            // Party UI can be incomplete for a frame. Keep a deterministic fallback rather than
-            // collapsing every unknown follower onto slot zero.
-            angle = (float)(Math.PI * 2 * (StableNameHash(localName) % 360) / 360);
-        }
-        else
-        {
-            angle = (float)(Math.PI * 2 * slot / slotCount);
-        }
-
-        var radiusGrid = radiusWorld / GridToWorldMultiplier;
-        var leaderGrid = leader.GridPosNum;
-
-        // If the assigned point lands in a wall, rotate around the ring in alternating directions
-        // until a clear nearby slot is found. This keeps formation targeting from creating a new
-        // wall-correction loop when the leader stands close to terrain.
-        for (var attempt = 0; attempt < 8; attempt++)
-        {
-            var offsetSteps = attempt == 0 ? 0 : (attempt + 1) / 2 * (attempt % 2 == 1 ? 1 : -1);
-            var candidateAngle = angle + offsetSteps * (float)(Math.PI / 4);
-            var candidateGrid = new Vector2(
-                leaderGrid.X + MathF.Cos(candidateAngle) * radiusGrid,
-                leaderGrid.Y + MathF.Sin(candidateAngle) * radiusGrid);
-
-            if (!HasClearLineOfSight(leaderGrid, candidateGrid)) continue;
-            var rounded = RoundGrid(candidateGrid);
-            return (GridToWorldPosition(rounded.x, rounded.y), rounded);
-        }
-
-        return (leader.PosNum, RoundGrid(leaderGrid));
-    }
-
-    private static int StableNameHash(string value)
-    {
-        unchecked
-        {
-            uint hash = 2166136261;
-            foreach (var c in value ?? "")
-            {
-                hash ^= char.ToUpperInvariant(c);
-                hash *= 16777619;
-            }
-            return (int)(hash & 0x7fffffff);
-        }
     }
 
     // Ground labels are screen-space UI attached to world entities. While the player/camera is
@@ -1487,7 +1389,6 @@ public class FollowManager
         ResetElementHover();
         _pursuitMode = null;
         _pursuitModeLockedUntil = DateTime.MinValue;
-        _formationPursuitActive = false;
 
         foreach (var task in _tasks)
         {
