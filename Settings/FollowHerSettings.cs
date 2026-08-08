@@ -65,6 +65,9 @@ public class MovementSettings
     public RangeNode<int> KeepWithinDistance { get; set; } = new(200, 10, 1000);
     public RangeNode<int> TransitionDistance { get; set; } = new(500, 100, 5000);
 
+    [Menu("Follower Spacing", "Radius around the leader assigned to stable follower formation slots. Prevents multiple followers trying to occupy the leader's exact position. Set 0 to disable.")]
+    public RangeNode<int> FollowerSpacing { get; set; } = new(100, 0, 300);
+
     [Menu("Zone Update Buffer (ms)")]
     public RangeNode<int> ZoneUpdateBuffer { get; set; } = new(1000, 500, 5000);
 

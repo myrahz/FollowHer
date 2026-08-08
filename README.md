@@ -204,8 +204,9 @@ See [Runtime controls](#runtime-controls-hotkeys--overlay). Precision Key / Prec
 | Setting | Default | Description |
 |---|---|---|
 | **Enable** | on | Seeds the Movement Toggle state at startup. After that the hotkey controls following. |
-| **Keep Within Distance** | 200 | With Close Follow on, the follower moves whenever it's farther than this from the leader. |
+| **Keep Within Distance** | 200 | With Close Follow on and Follower Spacing set to 0, the follower moves whenever it's farther than this from the leader. |
 | **Transition Distance** | 500 | Distance at which the follower always moves toward the leader (even with Close Follow off). |
+| **Follower Spacing** | 100 | Assigns each follower a stable formation slot this far from the leader so they don't collide at one point. Uses a movement deadband to prevent repeated corrections; 0 restores exact-leader following. |
 | **Zone Update Buffer (ms)** | 1000 | How long the leader's party-panel zone name must be stable before acting on it — avoids chasing a half-updated zone. |
 | **Zone Transition Max Walk Distance** | 300 | Prefer walking to and clicking the matching zone transition over teleporting, unless it's farther than this (or not visible). |
 | **Portal Approach Distance** | 80 | How close to approach a label-less transition before clicking its world position. Visible labels are clicked once from range and use the game's click-to-move pathfinding. |
