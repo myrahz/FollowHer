@@ -24,7 +24,7 @@ public class FollowManager
     private const string MoveSkillName = "Move";
     private const float FollowPortalWalkTolerance = 30f;
     private const int MaxFollowPortalAttempts = 10;
-    private const int PortalClickCooldownMs = 2500;
+    private const int PortalClickCooldownMs = 10000;
     private const int TpConfirmationTimeoutMs = 1500;
     private const int MaxPathSearchNodes = 20000;
     private const int PathSmoothingLookahead = 6;
@@ -66,6 +66,9 @@ public class FollowManager
     private DateTime _leaderZoneChangeTime = DateTime.MinValue;
     private DateTime _nextTpActionAt = DateTime.MinValue;
     private DateTime? _tpButtonClickedAt;
+    private string _unreachableLeaderZoneFromHideout = "";
+    private DateTime? _hideoutTeleportConfirmedAt;
+    private string _hideoutTeleportDestination = "";
 
     private DateTime _nextMovementInputAt = DateTime.MinValue;
     private Vector3? _lastMoveTargetWorld;
@@ -135,6 +138,8 @@ public class FollowManager
                 return true;
             }
 
+            if (HandlePendingHideoutTeleportResult()) return true;
+
             var currentArea = _gameController.Area?.CurrentArea;
             // Disabling movement in town only blocks normal same-zone following - it must not
             // block the leader-left-town case, so the zone-transition check below still runs.
@@ -160,6 +165,47 @@ public class FollowManager
             // that fully owns the decision - direct/pathfinding movement only applies same-zone.
             var leaderPartyMember = PartyPanelScanner.GetLeaderPartyMember(_gameController, leaderName);
             var currentZone = currentArea?.DisplayName;
+
+            // Kingsmarch is personal town-management content. Followers waiting in a hideout
+            // should not teleport there or start hunting through map-device portals.
+            if (currentArea?.IsHideout == true &&
+                leaderPartyMember != null &&
+                IsKingsmarchZone(leaderPartyMember.ZoneName))
+            {
+                LogDebug($"Leader is in '{leaderPartyMember.ZoneName}' - staying in the current hideout");
+                StopMovement();
+                return true;
+            }
+
+            // Do not follow the leader into another hideout (for example, a trade visit). Testing
+            // leaderEntity as well as the zone text handles two hideouts with the same display
+            // name: the party panel alone cannot distinguish those separate instances.
+            if (currentArea?.IsHideout == true &&
+                leaderPartyMember != null &&
+                leaderEntity == null &&
+                IsHideoutZone(leaderPartyMember.ZoneName))
+            {
+                LogDebug($"Leader is visiting hideout '{leaderPartyMember.ZoneName}' - staying in the current hideout");
+                StopMovement();
+                return true;
+            }
+
+            if (currentArea?.IsHideout == true &&
+                leaderPartyMember != null &&
+                string.Equals(_unreachableLeaderZoneFromHideout, leaderPartyMember.ZoneName,
+                    StringComparison.Ordinal))
+            {
+                // A map portal may render after an earlier party-teleport attempt failed. Let that
+                // newly visible matching portal recover the flow; otherwise remain parked.
+                if (GetBestPortalLabel(leaderPartyMember.ZoneName, player.PosNum) == null)
+                {
+                    LogDebug($"Leader location '{leaderPartyMember.ZoneName}' is not reachable by party teleport - staying in the current hideout");
+                    StopMovement();
+                    return true;
+                }
+
+                _unreachableLeaderZoneFromHideout = "";
+            }
 
             if (leaderPartyMember != null && !string.Equals(leaderPartyMember.ZoneName, currentZone, StringComparison.Ordinal))
             {
@@ -588,6 +634,23 @@ public class FollowManager
         // approach code and steer the player toward the portal's exact (often blocked) position.
         if (DateTime.Now < _nextPortalClickAt) return true;
 
+        // A visible label is itself a complete click-to-interact command: the game will path to a
+        // valid interaction point even when the entity position is buried inside its 3D model.
+        // Click it once from here and then leave that game-owned movement alone for the full
+        // cooldown. Never approach the model position first.
+        if (target.Label != null)
+        {
+            if (!IsPlayerSettledForInteraction()) return true;
+            if (!TryClickInteractionElement(target.Label)) return true;
+
+            LogDebug("Clicked transition label once - waiting for game click-to-move to activate it");
+            _portalClickAttempts++;
+            _nextPortalClickAt = DateTime.Now.AddMilliseconds(PortalClickCooldownMs);
+            return true;
+        }
+
+        // Label-less doorway transitions have no UI target, so these still require a world-space
+        // approach followed by a projected-position click.
         var distanceToPortal = Vector3.Distance(playerPos, target.WorldPos);
         var approachDistance = FollowHer.Instance.Settings.Movement.PortalApproachDistance.Value;
         if (distanceToPortal > approachDistance)
@@ -602,16 +665,7 @@ public class FollowManager
         // Release any held movement input first - a still-held Move key/mouse button can swallow
         // or override the click that follows.
         StopMovement();
-        if (target.Label != null)
-        {
-            if (!TryClickInteractionElement(target.Label)) return true;
-        }
-        else
-        {
-            // Some doorway transitions have no UI label to hover; their only usable target is the
-            // projected world position.
-            ClickWorldPosition(target.WorldPos);
-        }
+        ClickWorldPosition(target.WorldPos);
         _portalClickAttempts++;
         _nextPortalClickAt = DateTime.Now.AddMilliseconds(PortalClickCooldownMs);
         return true;
@@ -643,8 +697,15 @@ public class FollowManager
         // Prefer walking to and clicking the matching zone transition over teleporting - only
         // teleport if it's too far to bother walking to, or we can't see one at all.
         var playerPos = _gameController.Player.PosNum;
+
         var portal = GetBestPortalLabel(leaderPartyMember.ZoneName, referencePosition);
         var maxWalkDistance = FollowHer.Instance.Settings.Movement.ZoneTransitionMaxWalkDistance.Value;
+
+        // A matching map-device portal is the only valid way into a map; party teleport cannot
+        // enter it. In a hideout, use that portal even if the normal walk-distance preference
+        // would otherwise choose teleport.
+        if (_gameController.Area?.CurrentArea?.IsHideout == true && portal != null)
+            return TryClickZoneTransitionPortalLabel(portal);
 
         // A portal matching the target zone's name isn't necessarily the SAME connection the
         // leader actually used - a zone can have multiple distinct transitions to another zone
@@ -659,7 +720,7 @@ public class FollowManager
 
         if (portal != null && portalNearReference && Vector3.Distance(playerPos, portal.ItemOnGround.PosNum) <= maxWalkDistance)
         {
-            return TryWalkToZoneTransitionPortal(portal, playerPos);
+            return TryClickZoneTransitionPortalLabel(portal);
         }
 
         LogDebug(portal == null
@@ -668,23 +729,18 @@ public class FollowManager
         return TryTeleportToLeader(leaderPartyMember, referencePosition);
     }
 
-    private bool TryWalkToZoneTransitionPortal(LabelOnGround portal, Vector3 playerPos)
+    private bool TryClickZoneTransitionPortalLabel(LabelOnGround portal)
     {
         // Let a previous label click finish its own click-to-move before making any new movement
         // decision. Checking this after distance was the source of a post-click correction loop.
         if (DateTime.Now < _nextPortalClickAt) return true;
 
-        var distanceToPortal = Vector3.Distance(playerPos, portal.ItemOnGround.PosNum);
-        var approachDistance = FollowHer.Instance.Settings.Movement.PortalApproachDistance.Value;
-        if (distanceToPortal > approachDistance)
-        {
-            ResetInteractionSettling();
-            return ExecuteMovement(portal.ItemOnGround.PosNum, portal.ItemOnGround.GridPosNum);
-        }
-
+        // Do not approach ItemOnGround.PosNum: for some transitions that point is inside the 3D
+        // model and is not walkable. Clicking the visible label once lets the game select its own
+        // valid interaction point and walk there.
         if (!IsPlayerSettledForInteraction()) return true;
 
-        LogDebug("Walking to and clicking the zone transition");
+        LogDebug("Clicking zone-transition label once and waiting for game click-to-move");
         // Release any held movement input first - a still-held Move key/mouse button can swallow
         // or override the click that follows.
         StopMovement();
@@ -703,6 +759,14 @@ public class FollowManager
         var bufferMs = FollowHer.Instance.Settings.Movement.ZoneUpdateBuffer.Value;
         return timeSinceChange >= TimeSpan.FromMilliseconds(bufferMs);
     }
+
+    private static bool IsKingsmarchZone(string zoneName) =>
+        !string.IsNullOrWhiteSpace(zoneName) &&
+        zoneName.Contains("Kingsmarch", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsHideoutZone(string zoneName) =>
+        !string.IsNullOrWhiteSpace(zoneName) &&
+        zoneName.Contains("Hideout", StringComparison.OrdinalIgnoreCase);
 
     private IEnumerable<LabelOnGround> GetPortalCandidates()
     {
@@ -785,10 +849,25 @@ public class FollowManager
         var candidates = GetPortalCandidates().ToList();
         if (candidates.Count == 0) return null;
 
-        if (isHideout || realLevel >= 68)
+        if (isHideout)
+        {
+            // Every portal around the map device is a generic portal entity, but only portals whose
+            // visible label names the leader's zone belong to the map they entered. Never choose a
+            // random portal for a trade hideout, Kingsmarch, or some unrelated destination.
+            if (string.IsNullOrWhiteSpace(leaderZoneName)) return null;
+            var matchingPortals = candidates
+                .Where(x => x.Label.Text != null &&
+                            x.Label.Text.Contains(leaderZoneName, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            return matchingPortals.Count == 0
+                ? null
+                : matchingPortals[_random.Next(matchingPortals.Count)];
+        }
+
+        if (realLevel >= 68)
         {
             var portals = candidates.OrderBy(x => Vector3.Distance(referencePosition, x.ItemOnGround.PosNum)).ToList();
-            return isHideout ? portals[_random.Next(portals.Count)] : portals[0];
+            return portals[0];
         }
 
         if (string.IsNullOrEmpty(leaderZoneName)) return null;
@@ -874,6 +953,11 @@ public class FollowManager
         LogDebug("Teleport confirmation window open - confirming before anything else");
         StopMovement();
         ClickElement(confirmationButton);
+        if (_gameController.Area?.CurrentArea?.IsHideout == true)
+        {
+            _hideoutTeleportConfirmedAt = DateTime.Now;
+            _hideoutTeleportDestination = _lastKnownLeaderZone;
+        }
         _tpButtonClickedAt = null;
         _nextTpActionAt = DateTime.Now.AddMilliseconds(500);
         return true;
@@ -887,6 +971,27 @@ public class FollowManager
         if (GetTpConfirmationButton() != null) return true;
         return _tpButtonClickedAt.HasValue &&
                DateTime.Now - _tpButtonClickedAt.Value < TimeSpan.FromMilliseconds(TpConfirmationTimeoutMs);
+    }
+
+    private bool HandlePendingHideoutTeleportResult()
+    {
+        if (!_hideoutTeleportConfirmedAt.HasValue) return false;
+
+        StopMovement();
+        if (DateTime.Now - _hideoutTeleportConfirmedAt.Value < TimeSpan.FromMilliseconds(3000))
+            return true;
+
+        // A successful transfer causes an area reset, which clears this state. Still being in the
+        // same hideout after three seconds means the destination rejected party teleport.
+        if (_gameController.Area?.CurrentArea?.IsHideout == true)
+        {
+            _unreachableLeaderZoneFromHideout = _hideoutTeleportDestination;
+            LogDebug($"Teleport to '{_hideoutTeleportDestination}' did not change area - staying in the current hideout");
+        }
+
+        _hideoutTeleportConfirmedAt = null;
+        _hideoutTeleportDestination = "";
+        return true;
     }
 
     // Confirming an open window, and waiting while one is pending, are both handled globally at the
@@ -903,12 +1008,31 @@ public class FollowManager
         if (_tpButtonClickedAt.HasValue)
         {
             _tpButtonClickedAt = null;
+
+            if (_gameController.Area?.CurrentArea?.IsHideout == true)
+            {
+                LogDebug("Teleport-to-player is unavailable from this hideout - staying put");
+                _unreachableLeaderZoneFromHideout = leaderPartyMember.ZoneName;
+                StopMovement();
+                _nextTpActionAt = DateTime.Now.AddMilliseconds(2000);
+                return true;
+            }
+
             LogDebug("Teleport-to-player produced no confirmation window - falling back to the zone transition portal");
             return TryClickZoneTransitionPortal(leaderPartyMember.ZoneName, referencePosition);
         }
 
         if (leaderPartyMember.TpButton == null)
         {
+            if (_gameController.Area?.CurrentArea?.IsHideout == true)
+            {
+                LogDebug("Leader has no usable teleport button from this hideout - staying put");
+                _unreachableLeaderZoneFromHideout = leaderPartyMember.ZoneName;
+                StopMovement();
+                _nextTpActionAt = DateTime.Now.AddMilliseconds(2000);
+                return true;
+            }
+
             return TryClickZoneTransitionPortal(leaderPartyMember.ZoneName, referencePosition);
         }
 
@@ -932,7 +1056,7 @@ public class FollowManager
 
         LogDebug($"Found matching portal for zone '{leaderZoneName}' - clicking");
         if (!TryClickInteractionElement(portal.Label)) return true;
-        _nextTpActionAt = DateTime.Now.AddMilliseconds(4000);
+        _nextTpActionAt = DateTime.Now.AddMilliseconds(PortalClickCooldownMs);
         return true;
     }
 
@@ -1256,6 +1380,9 @@ public class FollowManager
         _leaderZoneChangeTime = DateTime.MinValue;
         _nextTpActionAt = DateTime.MinValue;
         _tpButtonClickedAt = null;
+        _unreachableLeaderZoneFromHideout = "";
+        _hideoutTeleportConfirmedAt = null;
+        _hideoutTeleportDestination = "";
         _nextMovementInputAt = DateTime.MinValue;
         _lastMoveTargetWorld = null;
         ResetInteractionSettling();

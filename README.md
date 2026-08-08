@@ -208,7 +208,7 @@ See [Runtime controls](#runtime-controls-hotkeys--overlay). Precision Key / Prec
 | **Transition Distance** | 500 | Distance at which the follower always moves toward the leader (even with Close Follow off). |
 | **Zone Update Buffer (ms)** | 1000 | How long the leader's party-panel zone name must be stable before acting on it — avoids chasing a half-updated zone. |
 | **Zone Transition Max Walk Distance** | 300 | Prefer walking to and clicking the matching zone transition over teleporting, unless it's farther than this (or not visible). |
-| **Portal Approach Distance** | 80 | How close to get to a transition/portal before clicking it. |
+| **Portal Approach Distance** | 80 | How close to approach a label-less transition before clicking its world position. Visible labels are clicked once from range and use the game's click-to-move pathfinding. |
 | **Transition Search Radius** | 200 | How far from where the leader was last seen to look for the transition they took. Raise this if the follower reaches the spot but never finds the transition. |
 | **Close Follow** | on | Keep tight to the leader (use Keep Within Distance) instead of only closing large gaps. |
 | **Disable Movement In Town** | off | Don't follow while in a town/hideout (still follows the leader *out* of town). |

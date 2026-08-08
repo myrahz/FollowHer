@@ -71,7 +71,7 @@ public class MovementSettings
     [Menu("Zone Transition Max Walk Distance", "Prefer walking to and clicking the matching zone transition over teleporting to the leader - only teleport if the transition is farther than this or isn't visible at all")]
     public RangeNode<int> ZoneTransitionMaxWalkDistance { get; set; } = new(300, 50, 2000);
 
-    [Menu("Portal Approach Distance", "How close to get to a transition/portal before clicking it - doesn't need to be the portal's exact position, which may not be walkable")]
+    [Menu("Portal Approach Distance", "How close to approach a label-less transition before clicking its world position. Visible portal labels are clicked once from range and use the game's own pathfinding.")]
     public RangeNode<int> PortalApproachDistance { get; set; } = new(80, 20, 300);
 
     [Menu("Transition Search Radius", "How far from where the leader was last seen to look for the transition/portal they went through. Raise this if the follower reaches the leader's last spot but never finds the transition (e.g. the leader rounded a corner before going through).")]

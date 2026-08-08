@@ -30,6 +30,9 @@ public class QuestObjectClickTask : IFollowTask
     public bool TryExecute(FollowTaskContext context)
     {
         if (!FollowHer.Instance.Settings.Movement.Tasks.ClickQuestObjects) return false;
+        // EntityType.IngameIcon is intentionally broad and includes hideout/map-device objects.
+        // Those are not quest triggers and can pull an idle follower away from the map device.
+        if (context.GameController.Area?.CurrentArea?.IsHideout == true) return false;
 
         var objects = FindQuestObjects(context.GameController);
 
