@@ -37,12 +37,8 @@ namespace FollowHer
         private DateTime _nextGemLevelClickAt = DateTime.MinValue;
         private DateTime _lastLeaderAttackDetectedAt = DateTime.MinValue;
         private readonly KeyHandler _remoteKeyHandler = new();
-        private readonly HashSet<RemoteHotkeyBinding> _registeredRemoteBindings = new();
-        private RemoteHotkeyNetwork _remoteHotkeyNetwork;
+        private RemoteHotkeyClient _remoteHotkeyClient;
         private string _remoteNetworkConfiguration;
-        private bool _leaderServerRequested;
-        private bool _serverButtonBusy;
-        private bool _allFollowersMovementEnabled;
 
         public bool MovementEnabled { get; private set; }
         public bool FightingEnabled { get; private set; }
@@ -81,16 +77,11 @@ namespace FollowHer
                     Input.RegisterKey(Settings.Hotkeys.FightingToggleKey);
                     _fightingToggled = false;
                 };
-                Settings.RemoteControl.StartStopServer.OnPressed = ToggleLeaderServer;
-                Input.RegisterKey(Settings.RemoteControl.ToggleAllFollowersMovementHotkey);
-                Settings.RemoteControl.ToggleAllFollowersMovementHotkey.OnValueChanged += () =>
-                    Input.RegisterKey(Settings.RemoteControl.ToggleAllFollowersMovementHotkey);
 
                 // Movement > Enable is the persisted default state; the toggle key just flips a
                 // runtime override seeded from it, rather than being OR'd against it forever
                 // (which made the hotkey unable to ever turn movement off while Enable was on).
                 _movementToggled = Settings.Movement.Enable.Value;
-                _allFollowersMovementEnabled = Settings.Movement.Enable.Value;
                 Settings.Movement.Enable.OnValueChanged += (_, value) =>
                 {
                     _movementToggled = value;
@@ -246,90 +237,37 @@ namespace FollowHer
             var remoteSettings = Settings.RemoteControl;
             var leaderAddress = remoteSettings.LeaderIpAddress.Value?.Trim() ?? string.Empty;
 
-            // Leader mode is controlled exclusively by the Start / Stop Server button. Follower
-            // mode still follows the plugin's Enable toggle: disabling a follower must cancel its
-            // reconnect loop and close its active socket immediately.
-            if (!string.IsNullOrWhiteSpace(leaderAddress) && !Settings.Enable)
-            {
-                StopRemoteHotkeys();
-                return;
-            }
-
-            if (string.IsNullOrWhiteSpace(leaderAddress) && !_leaderServerRequested)
+            if (!Settings.Enable || string.IsNullOrWhiteSpace(leaderAddress))
             {
                 StopRemoteHotkeys();
                 return;
             }
 
             var configuration = $"{leaderAddress}|{remoteSettings.Port.Value}";
-            if (_remoteHotkeyNetwork == null || !string.Equals(_remoteNetworkConfiguration, configuration, StringComparison.Ordinal))
+            if (_remoteHotkeyClient == null || !string.Equals(_remoteNetworkConfiguration, configuration, StringComparison.Ordinal))
             {
                 StopRemoteHotkeys();
                 _remoteNetworkConfiguration = configuration;
-                _remoteHotkeyNetwork = new RemoteHotkeyNetwork(leaderAddress, remoteSettings.Port.Value);
+                _remoteHotkeyClient = new RemoteHotkeyClient(leaderAddress, remoteSettings.Port.Value);
             }
 
-            if (_remoteHotkeyNetwork.IsLeader)
+            var playerName = GameController.Player?.GetComponent<Player>()?.PlayerName;
+            _remoteHotkeyClient.UpdateFollowerName(playerName);
+
+            while (_remoteHotkeyClient.TryDequeueKey(out var commandId, out var key))
             {
-                if (remoteSettings.ToggleAllFollowersMovementHotkey.Value != Keys.None &&
-                    remoteSettings.ToggleAllFollowersMovementHotkey.PressedOnce())
-                {
-                    _allFollowersMovementEnabled = !_allFollowersMovementEnabled;
-                    _remoteHotkeyNetwork.SendMovementStateToAll(_allFollowersMovementEnabled);
-                }
-
-                // A follower becomes configurable as soon as it registers. Keep the generated
-                // binding after disconnecting so the user's hotkeys remain persisted for the
-                // next session, and never duplicate a row that was entered manually.
-                foreach (var followerName in _remoteHotkeyNetwork.ConnectedFollowerNames)
-                {
-                    var alreadyConfigured = remoteSettings.FollowerHotkeys.Content.Any(binding =>
-                        binding != null && string.Equals(binding.FollowerName.Value?.Trim(), followerName,
-                            StringComparison.OrdinalIgnoreCase));
-                    if (alreadyConfigured) continue;
-
-                    remoteSettings.FollowerHotkeys.Content.Add(new RemoteHotkeyBinding
-                    {
-                        FollowerName = new ExileCore.Shared.Nodes.TextNode(followerName),
-                    });
-                    DebugWindow.LogMsg($"[RemoteHotkeys] Added connected follower '{followerName}' to Follower Hotkeys.");
-                }
-
-                foreach (var binding in remoteSettings.FollowerHotkeys.Content)
-                {
-                    if (binding == null) continue;
-                    if (_registeredRemoteBindings.Add(binding))
-                    {
-                        Input.RegisterKey(binding.LeaderHotkey);
-                        binding.LeaderHotkey.OnValueChanged += () => Input.RegisterKey(binding.LeaderHotkey);
-                    }
-                    if (binding.Enable && binding.LeaderHotkey.Value != Keys.None &&
-                        binding.FollowerKey.Value != Keys.None && binding.LeaderHotkey.PressedOnce())
-                    {
-                        _remoteHotkeyNetwork.SendKey(binding.FollowerName.Value, binding.FollowerKey.Value);
-                    }
-                }
+                DebugWindow.LogMsg($"[RemoteHotkeys] Injecting key {key} on follower '{playerName}'.");
+                _remoteKeyHandler.SinglePress(key);
+                _remoteHotkeyClient.AcknowledgeExecutedCommand(commandId);
             }
-            else
+
+            while (_remoteHotkeyClient.TryDequeueMovementState(out var movementCommandId, out var movementEnabled))
             {
-                var playerName = GameController.Player?.GetComponent<Player>()?.PlayerName;
-                _remoteHotkeyNetwork.UpdateFollowerName(playerName);
-
-                while (_remoteHotkeyNetwork.TryDequeueKey(out var commandId, out var key))
-                {
-                    DebugWindow.LogMsg($"[RemoteHotkeys] Injecting key {key} on follower '{playerName}'.");
-                    _remoteKeyHandler.SinglePress(key);
-                    _remoteHotkeyNetwork.AcknowledgeExecutedCommand(commandId);
-                }
-
-                while (_remoteHotkeyNetwork.TryDequeueMovementState(out var movementCommandId, out var movementEnabled))
-                {
-                    _movementToggled = movementEnabled;
-                    MovementEnabled = _movementToggled;
-                    DebugWindow.LogMsg($"[RemoteHotkeys] Movement set {(_movementToggled ? "ON" : "OFF")} " +
-                                       $"on follower '{playerName}'.");
-                    _remoteHotkeyNetwork.AcknowledgeExecutedCommand(movementCommandId);
-                }
+                _movementToggled = movementEnabled;
+                MovementEnabled = _movementToggled;
+                DebugWindow.LogMsg($"[RemoteHotkeys] Movement set {(_movementToggled ? "ON" : "OFF")} " +
+                                   $"on follower '{playerName}'.");
+                _remoteHotkeyClient.AcknowledgeExecutedCommand(movementCommandId);
             }
         }
 
@@ -343,55 +281,11 @@ namespace FollowHer
                                $"{(_movementToggled ? "ON" : "OFF")}.");
         }
 
-        private async void ToggleLeaderServer()
-        {
-            if (_serverButtonBusy) return;
-
-            var leaderAddress = Settings.RemoteControl.LeaderIpAddress.Value?.Trim() ?? string.Empty;
-            if (!string.IsNullOrWhiteSpace(leaderAddress))
-            {
-                DebugWindow.LogError("[RemoteHotkeys] Clear Leader IP Address before starting the leader server.");
-                return;
-            }
-
-            _serverButtonBusy = true;
-            try
-            {
-                if (_remoteHotkeyNetwork?.IsLeader == true)
-                {
-                    _leaderServerRequested = false;
-                    StopRemoteHotkeys();
-                    DebugWindow.LogMsg("[RemoteHotkeys] Leader server stopped.");
-                    return;
-                }
-
-                var port = Settings.RemoteControl.Port.Value;
-                if (await RemoteHotkeyNetwork.TryStopExistingServerAsync(port))
-                {
-                    _leaderServerRequested = false;
-                    DebugWindow.LogMsg($"[RemoteHotkeys] Stopped the FollowHer server already running on port {port}. Press Start / Stop Server again to start this instance.");
-                    return;
-                }
-
-                _leaderServerRequested = true;
-                DebugWindow.LogMsg($"[RemoteHotkeys] Leader server start requested on port {port}.");
-            }
-            catch (Exception ex)
-            {
-                DebugWindow.LogError($"[RemoteHotkeys] Start / Stop Server failed: {ex.Message}");
-            }
-            finally
-            {
-                _serverButtonBusy = false;
-            }
-        }
-
         private void StopRemoteHotkeys()
         {
-            _remoteHotkeyNetwork?.Dispose();
-            _remoteHotkeyNetwork = null;
+            _remoteHotkeyClient?.Dispose();
+            _remoteHotkeyClient = null;
             _remoteNetworkConfiguration = null;
-            _registeredRemoteBindings.Clear();
             _remoteKeyHandler.ReleaseAll();
         }
 
@@ -411,14 +305,12 @@ namespace FollowHer
 
         public override void OnPluginDestroyForHotReload()
         {
-            _leaderServerRequested = false;
             StopRemoteHotkeys();
             _remoteKeyHandler.Dispose();
         }
 
         public override void OnClose()
         {
-            _leaderServerRequested = false;
             StopRemoteHotkeys();
             _remoteKeyHandler.Dispose();
             base.OnClose();

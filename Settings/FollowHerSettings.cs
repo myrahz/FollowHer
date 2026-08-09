@@ -32,42 +32,11 @@ public class FollowHerSettings : ISettings
 [Submenu(CollapsedByDefault = true)]
 public class RemoteControlSettings
 {
-    [Menu("Leader IP Address", "Leave blank on the leader. On every follower, enter the leader machine's IP address or host name.")]
+    [Menu("Leader IP Address", "IP address or host name of the machine running FollowHerLeader.")]
     public TextNode LeaderIpAddress { get; set; } = new("");
 
-    [Menu("Start / Stop Server", "Leader only: starts this instance's server, or stops a server left running by an earlier plugin reload.")]
-    public ButtonNode StartStopServer { get; set; } = new();
-
-    [Menu("Port", "TCP port shared by the leader and every follower.")]
+    [Menu("Leader Port", "TCP port configured in FollowHerLeader.")]
     public RangeNode<int> Port { get; set; } = new(19876, 1024, 65535);
-
-    [Menu("Toggle Movement On All Followers", "Leader only: toggles FollowHer movement directly on every connected follower.")]
-    public HotkeyNode ToggleAllFollowersMovementHotkey { get; set; } = new(Keys.None);
-
-    [Menu("Follower Hotkeys", "Leader only: map a hotkey on this machine to a key press on one named follower.")]
-    public ContentNode<RemoteHotkeyBinding> FollowerHotkeys { get; set; } = new()
-    {
-        EnableItemCollapsing = true,
-        EnableControls = true,
-    };
-}
-
-public class RemoteHotkeyBinding
-{
-    public ToggleNode Enable { get; set; } = new(true);
-
-    [Menu("Follower Name", "The follower's in-game character name (case-insensitive).")]
-    public TextNode FollowerName { get; set; } = new("");
-
-    [Menu("Leader Hotkey", "Press this key on the leader machine to trigger the follower.")]
-    public HotkeyNode LeaderHotkey { get; set; } = new(Keys.None);
-
-    [Menu("Follower Key", "The key that will be pressed once on the selected follower machine.")]
-    public HotkeyNode FollowerKey { get; set; } = new(Keys.None);
-
-    public override string ToString() => string.IsNullOrWhiteSpace(FollowerName.Value)
-        ? "New follower hotkey"
-        : $"{FollowerName.Value}: {LeaderHotkey.Value} -> {FollowerKey.Value}";
 }
 
 [Submenu(CollapsedByDefault = true)]

@@ -89,14 +89,14 @@ Movement following survives zone transitions on purpose (that's the point); the 
 
 ## Leader-to-follower remote hotkeys
 
-The leader can trigger a single key press on one specific follower over TCP. Setup is intentionally asymmetric:
+Remote control is split between the lightweight client built into FollowHer and the separate `FollowHerLeader` plugin:
 
-1. On the **leader**, leave **Remote Control > Leader IP Address** blank, choose a port, and press **Start / Stop Server**. Press it again to stop the current server. After a plugin hot reload, the same button can stop the listener left by the earlier instance; press it once more to start the new instance.
-2. On each **follower**, set only **Remote Control > Leader IP Address** and the matching **Port**. The follower identifies itself from its current character name and reconnects automatically.
-3. Set **Toggle Movement On All Followers** on the leader to alternate a master movement state and explicitly set every connected follower to the same `ON` or `OFF` value. Each follower can still use its own local Movement Toggle Key; the next master press resynchronizes every follower. Once registered, each follower is also automatically added under **Follower Hotkeys** for normal remote-key mappings.
+1. Install and enable `FollowHerLeader` on the **leader** client. Choose a port and press **Start / Stop Server**. Press it again to stop; its hot-reload cleanup also releases the listener automatically.
+2. On each **follower**, install FollowHer and set only **Remote Control > Leader IP Address** and the matching **Leader Port**. The client runs only while FollowHer is enabled, identifies itself from the current character name, and reconnects automatically.
+3. In `FollowHerLeader`, set **Toggle Movement On All Followers** to alternate a master movement state and explicitly set every connected follower to the same `ON` or `OFF` value. Each follower can still use its local Movement Toggle Key; the next master press resynchronizes everyone. Registered followers are automatically added under **Follower Hotkeys** for individual remote-key mappings.
 4. Allow the chosen TCP port through the leader machine's firewall. Prefer a private LAN/VPN address; the protocol is intended for trusted networks and has no authentication or encryption.
 
-An empty leader address is what selects leader/server mode. A populated address selects follower/client mode. Bindings and leader hotkeys are ignored on follower clients.
+FollowHer itself no longer contains a server or leader hotkey settings. `FollowHerLeader` owns all listening, follower discovery, command dispatch, retry, and confirmation behavior.
 
 Remote commands carry unique IDs. A follower acknowledges only after applying a movement state or injecting a key; the leader retries an unconfirmed command up to three times at 150 ms intervals. Retries are deduplicated on the follower, so a lost acknowledgement cannot execute the same command twice.
 
