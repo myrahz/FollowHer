@@ -73,6 +73,8 @@ public sealed class RemoteHotkeyNetwork : IDisposable
     private TcpListener _listener;
     private StreamWriter _clientWriter;
     private string _followerName = string.Empty;
+    private string _lastConnectionIssue = string.Empty;
+    private DateTime _lastConnectionIssueAt = DateTime.MinValue;
     private bool _disposed;
 
     public bool IsLeader => string.IsNullOrWhiteSpace(_leaderAddress);
@@ -81,6 +83,9 @@ public sealed class RemoteHotkeyNetwork : IDisposable
     {
         _leaderAddress = leaderAddress?.Trim() ?? string.Empty;
         _port = port;
+        LogInfo(IsLeader
+            ? $"Starting leader server on TCP port {_port}."
+            : $"Starting follower client for {_leaderAddress}:{_port}.");
         _ = IsLeader ? RunServerAsync() : RunClientAsync();
     }
 
@@ -100,8 +105,14 @@ public sealed class RemoteHotkeyNetwork : IDisposable
     public void SendKey(string followerName, Keys key)
     {
         if (!IsLeader || string.IsNullOrWhiteSpace(followerName) || key == Keys.None) return;
-        if (!_followers.TryGetValue(followerName.Trim(), out var follower)) return;
+        if (!_followers.TryGetValue(followerName.Trim(), out var follower))
+        {
+            LogInfo($"Hotkey ignored: follower '{followerName.Trim()}' is not connected. " +
+                    $"Connected followers: {FormatConnectedFollowers()}.");
+            return;
+        }
 
+        LogInfo($"Sending {key} to follower '{follower.Name}'.");
         _ = SendToFollowerAsync(follower, new Message { Type = "key", Key = (int)key });
     }
 
@@ -123,10 +134,12 @@ public sealed class RemoteHotkeyNetwork : IDisposable
         {
             _listener = new TcpListener(IPAddress.Any, _port);
             _listener.Start();
+            LogInfo($"Leader server is listening on 0.0.0.0:{_port}.");
 
             while (!_cancellation.IsCancellationRequested)
             {
                 var client = await _listener.AcceptTcpClientAsync(_cancellation.Token).ConfigureAwait(false);
+                LogInfo($"Accepted connection from {client.Client.RemoteEndPoint}.");
                 _ = HandleFollowerAsync(client);
             }
         }
@@ -163,6 +176,7 @@ public sealed class RemoteHotkeyNetwork : IDisposable
                     oldConnection.Dispose();
                 }
                 _followers[name] = connection;
+                LogInfo($"Follower '{name}' registered. Connected followers: {FormatConnectedFollowers()}.");
             }
         }
         catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException or OperationCanceledException) { }
@@ -186,6 +200,8 @@ public sealed class RemoteHotkeyNetwork : IDisposable
             {
                 client = new TcpClient();
                 await client.ConnectAsync(_leaderAddress, _port, _cancellation.Token).ConfigureAwait(false);
+                LogInfo($"Connected to leader at {_leaderAddress}:{_port}.");
+                _lastConnectionIssue = string.Empty;
                 var stream = client.GetStream();
                 var reader = new StreamReader(stream);
                 var writer = new StreamWriter(stream) { AutoFlush = true };
@@ -206,7 +222,11 @@ public sealed class RemoteHotkeyNetwork : IDisposable
                     }
                 }
             }
-            catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException or OperationCanceledException) { }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException)
+            {
+                LogConnectionIssue(ex.Message);
+            }
             catch (Exception ex)
             {
                 LogError($"Follower client failed: {ex.Message}");
@@ -245,6 +265,7 @@ public sealed class RemoteHotkeyNetwork : IDisposable
                 Type = "register",
                 FollowerName = followerName,
             })).ConfigureAwait(false);
+            LogInfo($"Registered with leader as follower '{followerName}'.");
         }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException) { }
     }
@@ -259,6 +280,24 @@ public sealed class RemoteHotkeyNetwork : IDisposable
         follower.Dispose();
     }
 
+    private string FormatConnectedFollowers()
+    {
+        var names = _followers.Keys;
+        return names.Count == 0 ? "none" : string.Join(", ", names);
+    }
+
+    private void LogConnectionIssue(string message)
+    {
+        var now = DateTime.UtcNow;
+        if (string.Equals(_lastConnectionIssue, message, StringComparison.Ordinal) &&
+            now - _lastConnectionIssueAt < TimeSpan.FromSeconds(10)) return;
+
+        _lastConnectionIssue = message;
+        _lastConnectionIssueAt = now;
+        LogInfo($"Could not connect to {_leaderAddress}:{_port}: {message}. Retrying every 2 seconds.");
+    }
+
+    private static void LogInfo(string message) => DebugWindow.LogMsg($"[RemoteHotkeys] {message}");
     private static void LogError(string message) => DebugWindow.LogError($"[RemoteHotkeys] {message}");
 
     public void Dispose()
