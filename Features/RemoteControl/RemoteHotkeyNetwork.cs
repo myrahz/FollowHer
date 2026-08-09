@@ -91,6 +91,32 @@ public sealed class RemoteHotkeyNetwork : IDisposable
         _ = IsLeader ? RunServerAsync() : RunClientAsync();
     }
 
+    /// <summary>
+    /// Stops a FollowHer listener left behind by an earlier hot-reloaded plugin instance. The
+    /// server accepts this command only over loopback, so remote follower machines cannot stop it.
+    /// </summary>
+    public static async Task<bool> TryStopExistingServerAsync(int port)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        try
+        {
+            using var client = new TcpClient();
+            await client.ConnectAsync(IPAddress.Loopback, port, timeout.Token).ConfigureAwait(false);
+            var stream = client.GetStream();
+            using var reader = new StreamReader(stream);
+            using var writer = new StreamWriter(stream) { AutoFlush = true };
+            await writer.WriteLineAsync(JsonConvert.SerializeObject(new Message { Type = "shutdown" }))
+                .ConfigureAwait(false);
+            var responseLine = await reader.ReadLineAsync(timeout.Token).ConfigureAwait(false);
+            var response = JsonConvert.DeserializeObject<Message>(responseLine ?? string.Empty);
+            return response?.Type == "stopping";
+        }
+        catch (Exception ex) when (ex is IOException or SocketException or OperationCanceledException or ObjectDisposedException)
+        {
+            return false;
+        }
+    }
+
     public void UpdateFollowerName(string followerName)
     {
         if (IsLeader || string.IsNullOrWhiteSpace(followerName)) return;
@@ -123,6 +149,10 @@ public sealed class RemoteHotkeyNetwork : IDisposable
         try
         {
             await follower.SendAsync(message, _cancellation.Token).ConfigureAwait(false);
+            if (message.Type == "key")
+            {
+                LogInfo($"Sent key {(Keys)message.Key} to follower '{follower.Name}'.");
+            }
         }
         catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException or OperationCanceledException)
         {
@@ -169,14 +199,28 @@ public sealed class RemoteHotkeyNetwork : IDisposable
                 if (line == null) break;
 
                 var message = JsonConvert.DeserializeObject<Message>(line);
+                if (message?.Type == "shutdown")
+                {
+                    var remoteAddress = (client.Client.RemoteEndPoint as IPEndPoint)?.Address;
+                    if (remoteAddress != null && IPAddress.IsLoopback(remoteAddress))
+                    {
+                        await connection.SendAsync(new Message { Type = "stopping" }, _cancellation.Token)
+                            .ConfigureAwait(false);
+                        LogInfo($"Loopback shutdown requested for leader server on port {_port}.");
+                        _ = Task.Run(Dispose);
+                        break;
+                    }
+                    continue;
+                }
                 if (message?.Type != "register" || string.IsNullOrWhiteSpace(message.FollowerName)) continue;
 
                 var name = message.FollowerName.Trim();
                 connection.Name = name;
-                if (_followers.TryGetValue(name, out var oldConnection) && oldConnection != connection)
-                {
-                    oldConnection.Dispose();
-                }
+                // Do not close an older connection for the same character here. During an ExileAPI
+                // hot reload, the old plugin instance can remain alive briefly. Closing its socket
+                // makes it reconnect and evict the new instance, producing an endless two-second
+                // reconnect loop. Route new commands to the most recently registered connection;
+                // the older socket will remove only itself when it naturally closes.
                 _followers[name] = connection;
                 LogInfo($"Follower '{name}' registered. Connected followers: {FormatConnectedFollowers()}.");
                 await connection.SendAsync(new Message
@@ -229,7 +273,9 @@ public sealed class RemoteHotkeyNetwork : IDisposable
                     // necessarily named enum members and must not be rejected by Enum.IsDefined.
                     else if (message?.Type == "key" && message.Key > 0)
                     {
-                        _receivedKeys.Enqueue((Keys)message.Key);
+                        var key = (Keys)message.Key;
+                        LogInfo($"Received key {key} from leader; queued for input.");
+                        _receivedKeys.Enqueue(key);
                     }
                 }
             }

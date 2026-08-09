@@ -35,6 +35,9 @@ public class RemoteControlSettings
     [Menu("Leader IP Address", "Leave blank on the leader. On every follower, enter the leader machine's IP address or host name.")]
     public TextNode LeaderIpAddress { get; set; } = new("");
 
+    [Menu("Start / Stop Server", "Leader only: starts this instance's server, or stops a server left running by an earlier plugin reload.")]
+    public ButtonNode StartStopServer { get; set; } = new();
+
     [Menu("Port", "TCP port shared by the leader and every follower.")]
     public RangeNode<int> Port { get; set; } = new(19876, 1024, 65535);
 

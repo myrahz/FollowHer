@@ -40,6 +40,8 @@ namespace FollowHer
         private readonly HashSet<RemoteHotkeyBinding> _registeredRemoteBindings = new();
         private RemoteHotkeyNetwork _remoteHotkeyNetwork;
         private string _remoteNetworkConfiguration;
+        private bool _leaderServerRequested;
+        private bool _serverButtonBusy;
 
         public bool MovementEnabled { get; private set; }
         public bool FightingEnabled { get; private set; }
@@ -78,6 +80,7 @@ namespace FollowHer
                     Input.RegisterKey(Settings.Hotkeys.FightingToggleKey);
                     _fightingToggled = false;
                 };
+                Settings.RemoteControl.StartStopServer.OnPressed = ToggleLeaderServer;
 
                 // Movement > Enable is the persisted default state; the toggle key just flips a
                 // runtime override seeded from it, rather than being OR'd against it forever
@@ -238,14 +241,24 @@ namespace FollowHer
 
         private void UpdateRemoteHotkeys()
         {
-            if (!Settings.Enable)
+            var remoteSettings = Settings.RemoteControl;
+            var leaderAddress = remoteSettings.LeaderIpAddress.Value?.Trim() ?? string.Empty;
+
+            // Leader mode is controlled exclusively by the Start / Stop Server button. Follower
+            // mode still follows the plugin's Enable toggle: disabling a follower must cancel its
+            // reconnect loop and close its active socket immediately.
+            if (!string.IsNullOrWhiteSpace(leaderAddress) && !Settings.Enable)
             {
                 StopRemoteHotkeys();
                 return;
             }
 
-            var remoteSettings = Settings.RemoteControl;
-            var leaderAddress = remoteSettings.LeaderIpAddress.Value?.Trim() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(leaderAddress) && !_leaderServerRequested)
+            {
+                StopRemoteHotkeys();
+                return;
+            }
+
             var configuration = $"{leaderAddress}|{remoteSettings.Port.Value}";
             if (_remoteHotkeyNetwork == null || !string.Equals(_remoteNetworkConfiguration, configuration, StringComparison.Ordinal))
             {
@@ -295,8 +308,52 @@ namespace FollowHer
 
                 while (_remoteHotkeyNetwork.TryDequeueKey(out var key))
                 {
+                    DebugWindow.LogMsg($"[RemoteHotkeys] Injecting key {key} on follower '{playerName}'.");
                     _remoteKeyHandler.SinglePress(key);
                 }
+            }
+        }
+
+        private async void ToggleLeaderServer()
+        {
+            if (_serverButtonBusy) return;
+
+            var leaderAddress = Settings.RemoteControl.LeaderIpAddress.Value?.Trim() ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(leaderAddress))
+            {
+                DebugWindow.LogError("[RemoteHotkeys] Clear Leader IP Address before starting the leader server.");
+                return;
+            }
+
+            _serverButtonBusy = true;
+            try
+            {
+                if (_remoteHotkeyNetwork?.IsLeader == true)
+                {
+                    _leaderServerRequested = false;
+                    StopRemoteHotkeys();
+                    DebugWindow.LogMsg("[RemoteHotkeys] Leader server stopped.");
+                    return;
+                }
+
+                var port = Settings.RemoteControl.Port.Value;
+                if (await RemoteHotkeyNetwork.TryStopExistingServerAsync(port))
+                {
+                    _leaderServerRequested = false;
+                    DebugWindow.LogMsg($"[RemoteHotkeys] Stopped the FollowHer server already running on port {port}. Press Start / Stop Server again to start this instance.");
+                    return;
+                }
+
+                _leaderServerRequested = true;
+                DebugWindow.LogMsg($"[RemoteHotkeys] Leader server start requested on port {port}.");
+            }
+            catch (Exception ex)
+            {
+                DebugWindow.LogError($"[RemoteHotkeys] Start / Stop Server failed: {ex.Message}");
+            }
+            finally
+            {
+                _serverButtonBusy = false;
             }
         }
 
@@ -321,6 +378,21 @@ namespace FollowHer
             base.DrawSettings();
             _combatRuleEditor.Draw(Settings.Combat);
             _combatRuleEditor.DrawLeaderSkillBlacklist(Settings.Combat);
+        }
+
+        public override void OnPluginDestroyForHotReload()
+        {
+            _leaderServerRequested = false;
+            StopRemoteHotkeys();
+            _remoteKeyHandler.Dispose();
+        }
+
+        public override void OnClose()
+        {
+            _leaderServerRequested = false;
+            StopRemoteHotkeys();
+            _remoteKeyHandler.Dispose();
+            base.OnClose();
         }
 
         // Always resurrect at the checkpoint rather than in town - independent of the
