@@ -15,6 +15,8 @@ using FollowHer.Core.Events;
 using FollowHer.Core.Events.Events;
 using FollowHer.Features.Following;
 using FollowHer.Features.Rendering;
+using FollowHer.Features.Input;
+using FollowHer.Features.RemoteControl;
 using FollowHer.Settings;
 using ImGuiNET;
 
@@ -34,6 +36,10 @@ namespace FollowHer
         private DateTime _leaderInviteFirstSeenAt = DateTime.MinValue;
         private DateTime _nextGemLevelClickAt = DateTime.MinValue;
         private DateTime _lastLeaderAttackDetectedAt = DateTime.MinValue;
+        private readonly KeyHandler _remoteKeyHandler = new();
+        private readonly HashSet<RemoteHotkeyBinding> _registeredRemoteBindings = new();
+        private RemoteHotkeyNetwork _remoteHotkeyNetwork;
+        private string _remoteNetworkConfiguration;
 
         public bool MovementEnabled { get; private set; }
         public bool FightingEnabled { get; private set; }
@@ -120,6 +126,14 @@ namespace FollowHer
 
         public override Job Tick()
         {
+            try
+            {
+                UpdateRemoteHotkeys();
+            }
+            catch (Exception ex)
+            {
+                DebugWindow.LogError($"[{Name}] Error updating remote hotkeys: {ex.Message}");
+            }
             if (!ShouldProcess()) return null;
 
             try
@@ -220,6 +234,62 @@ namespace FollowHer
             }
 
             return null;
+        }
+
+        private void UpdateRemoteHotkeys()
+        {
+            if (!Settings.Enable)
+            {
+                StopRemoteHotkeys();
+                return;
+            }
+
+            var remoteSettings = Settings.RemoteControl;
+            var leaderAddress = remoteSettings.LeaderIpAddress.Value?.Trim() ?? string.Empty;
+            var configuration = $"{leaderAddress}|{remoteSettings.Port.Value}";
+            if (_remoteHotkeyNetwork == null || !string.Equals(_remoteNetworkConfiguration, configuration, StringComparison.Ordinal))
+            {
+                StopRemoteHotkeys();
+                _remoteNetworkConfiguration = configuration;
+                _remoteHotkeyNetwork = new RemoteHotkeyNetwork(leaderAddress, remoteSettings.Port.Value);
+            }
+
+            if (_remoteHotkeyNetwork.IsLeader)
+            {
+                foreach (var binding in remoteSettings.FollowerHotkeys.Content)
+                {
+                    if (binding == null) continue;
+                    if (_registeredRemoteBindings.Add(binding))
+                    {
+                        Input.RegisterKey(binding.LeaderHotkey);
+                        binding.LeaderHotkey.OnValueChanged += () => Input.RegisterKey(binding.LeaderHotkey);
+                    }
+                    if (binding.Enable && binding.LeaderHotkey.Value != Keys.None &&
+                        binding.FollowerKey.Value != Keys.None && binding.LeaderHotkey.PressedOnce())
+                    {
+                        _remoteHotkeyNetwork.SendKey(binding.FollowerName.Value, binding.FollowerKey.Value);
+                    }
+                }
+            }
+            else
+            {
+                var playerName = GameController.Player?.GetComponent<Player>()?.PlayerName;
+                _remoteHotkeyNetwork.UpdateFollowerName(playerName);
+
+                while (_remoteHotkeyNetwork.TryDequeueKey(out var key))
+                {
+                    _remoteKeyHandler.SinglePress(key);
+                }
+            }
+        }
+
+        private void StopRemoteHotkeys()
+        {
+            _remoteHotkeyNetwork?.Dispose();
+            _remoteHotkeyNetwork = null;
+            _remoteNetworkConfiguration = null;
+            _registeredRemoteBindings.Clear();
+            _remoteKeyHandler.ReleaseAll();
         }
 
         public override void Render()
