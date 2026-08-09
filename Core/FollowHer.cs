@@ -256,6 +256,23 @@ namespace FollowHer
 
             if (_remoteHotkeyNetwork.IsLeader)
             {
+                // A follower becomes configurable as soon as it registers. Keep the generated
+                // binding after disconnecting so the user's hotkeys remain persisted for the
+                // next session, and never duplicate a row that was entered manually.
+                foreach (var followerName in _remoteHotkeyNetwork.ConnectedFollowerNames)
+                {
+                    var alreadyConfigured = remoteSettings.FollowerHotkeys.Content.Any(binding =>
+                        binding != null && string.Equals(binding.FollowerName.Value?.Trim(), followerName,
+                            StringComparison.OrdinalIgnoreCase));
+                    if (alreadyConfigured) continue;
+
+                    remoteSettings.FollowerHotkeys.Content.Add(new RemoteHotkeyBinding
+                    {
+                        FollowerName = new ExileCore.Shared.Nodes.TextNode(followerName),
+                    });
+                    DebugWindow.LogMsg($"[RemoteHotkeys] Added connected follower '{followerName}' to Follower Hotkeys.");
+                }
+
                 foreach (var binding in remoteSettings.FollowerHotkeys.Content)
                 {
                     if (binding == null) continue;

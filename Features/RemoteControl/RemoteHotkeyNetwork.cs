@@ -79,6 +79,8 @@ public sealed class RemoteHotkeyNetwork : IDisposable
 
     public bool IsLeader => string.IsNullOrWhiteSpace(_leaderAddress);
 
+    public IReadOnlyCollection<string> ConnectedFollowerNames => new List<string>(_followers.Keys);
+
     public RemoteHotkeyNetwork(string leaderAddress, int port)
     {
         _leaderAddress = leaderAddress?.Trim() ?? string.Empty;
@@ -177,6 +179,11 @@ public sealed class RemoteHotkeyNetwork : IDisposable
                 }
                 _followers[name] = connection;
                 LogInfo($"Follower '{name}' registered. Connected followers: {FormatConnectedFollowers()}.");
+                await connection.SendAsync(new Message
+                {
+                    Type = "registered",
+                    FollowerName = name,
+                }, _cancellation.Token).ConfigureAwait(false);
             }
         }
         catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException or OperationCanceledException) { }
@@ -214,9 +221,13 @@ public sealed class RemoteHotkeyNetwork : IDisposable
                     if (line == null) break;
 
                     var message = JsonConvert.DeserializeObject<Message>(line);
+                    if (message?.Type == "registered")
+                    {
+                        LogInfo($"Leader acknowledged follower '{message.FollowerName}'. Remote hotkeys are ready.");
+                    }
                     // Keys is a flags enum, so valid combinations (for example Ctrl+A) are not
                     // necessarily named enum members and must not be rejected by Enum.IsDefined.
-                    if (message?.Type == "key" && message.Key > 0)
+                    else if (message?.Type == "key" && message.Key > 0)
                     {
                         _receivedKeys.Enqueue((Keys)message.Key);
                     }
@@ -265,7 +276,7 @@ public sealed class RemoteHotkeyNetwork : IDisposable
                 Type = "register",
                 FollowerName = followerName,
             })).ConfigureAwait(false);
-            LogInfo($"Registered with leader as follower '{followerName}'.");
+            LogInfo($"Sent registration for follower '{followerName}'; waiting for leader acknowledgement.");
         }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException) { }
     }
