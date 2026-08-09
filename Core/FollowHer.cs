@@ -81,6 +81,9 @@ namespace FollowHer
                     _fightingToggled = false;
                 };
                 Settings.RemoteControl.StartStopServer.OnPressed = ToggleLeaderServer;
+                Input.RegisterKey(Settings.RemoteControl.ToggleAllFollowersMovementHotkey);
+                Settings.RemoteControl.ToggleAllFollowersMovementHotkey.OnValueChanged += () =>
+                    Input.RegisterKey(Settings.RemoteControl.ToggleAllFollowersMovementHotkey);
 
                 // Movement > Enable is the persisted default state; the toggle key just flips a
                 // runtime override seeded from it, rather than being OR'd against it forever
@@ -269,6 +272,12 @@ namespace FollowHer
 
             if (_remoteHotkeyNetwork.IsLeader)
             {
+                if (remoteSettings.ToggleAllFollowersMovementHotkey.Value != Keys.None &&
+                    remoteSettings.ToggleAllFollowersMovementHotkey.PressedOnce())
+                {
+                    _remoteHotkeyNetwork.SendMovementToggleToAll();
+                }
+
                 // A follower becomes configurable as soon as it registers. Keep the generated
                 // binding after disconnecting so the user's hotkeys remain persisted for the
                 // next session, and never duplicate a row that was entered manually.
@@ -310,6 +319,14 @@ namespace FollowHer
                 {
                     DebugWindow.LogMsg($"[RemoteHotkeys] Injecting key {key} on follower '{playerName}'.");
                     _remoteKeyHandler.SinglePress(key);
+                }
+
+                while (_remoteHotkeyNetwork.TryDequeueMovementToggle())
+                {
+                    _movementToggled = !_movementToggled;
+                    MovementEnabled = _movementToggled;
+                    DebugWindow.LogMsg($"[RemoteHotkeys] Movement toggled {(_movementToggled ? "ON" : "OFF")} " +
+                                       $"on follower '{playerName}'.");
                 }
             }
         }

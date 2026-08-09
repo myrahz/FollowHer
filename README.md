@@ -93,7 +93,7 @@ The leader can trigger a single key press on one specific follower over TCP. Set
 
 1. On the **leader**, leave **Remote Control > Leader IP Address** blank, choose a port, and press **Start / Stop Server**. Press it again to stop the current server. After a plugin hot reload, the same button can stop the listener left by the earlier instance; press it once more to start the new instance.
 2. On each **follower**, set only **Remote Control > Leader IP Address** and the matching **Port**. The follower identifies itself from its current character name and reconnects automatically.
-3. Once registered, the follower is automatically added under the leader's **Follower Hotkeys**. Open its row and select the hotkey pressed on the leader and the key to press on that follower. The row remains saved when the follower disconnects.
+3. Set **Toggle Movement On All Followers** on the leader to broadcast a direct movement-state toggle to every connected follower. Once registered, each follower is also automatically added under **Follower Hotkeys** for normal leader-hotkey-to-follower-key mappings. Rows remain saved when followers disconnect.
 4. Allow the chosen TCP port through the leader machine's firewall. Prefer a private LAN/VPN address; the protocol is intended for trusted networks and has no authentication or encryption.
 
 An empty leader address is what selects leader/server mode. A populated address selects follower/client mode. Bindings and leader hotkeys are ignored on follower clients.

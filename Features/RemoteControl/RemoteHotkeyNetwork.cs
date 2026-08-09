@@ -67,6 +67,7 @@ public sealed class RemoteHotkeyNetwork : IDisposable
     private readonly ConcurrentDictionary<string, FollowerConnection> _followers =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentQueue<Keys> _receivedKeys = new();
+    private readonly ConcurrentQueue<byte> _movementToggleCommands = new();
     private readonly object _clientWriterLock = new();
     private readonly string _leaderAddress;
     private readonly int _port;
@@ -130,6 +131,8 @@ public sealed class RemoteHotkeyNetwork : IDisposable
 
     public bool TryDequeueKey(out Keys key) => _receivedKeys.TryDequeue(out key);
 
+    public bool TryDequeueMovementToggle() => _movementToggleCommands.TryDequeue(out _);
+
     public void SendKey(string followerName, Keys key)
     {
         if (!IsLeader || string.IsNullOrWhiteSpace(followerName) || key == Keys.None) return;
@@ -144,6 +147,25 @@ public sealed class RemoteHotkeyNetwork : IDisposable
         _ = SendToFollowerAsync(follower, new Message { Type = "key", Key = (int)key });
     }
 
+    public void SendMovementToggleToAll()
+    {
+        if (!IsLeader) return;
+
+        var followers = new List<FollowerConnection>(_followers.Values);
+        if (followers.Count == 0)
+        {
+            LogInfo("Movement toggle ignored: no followers are connected.");
+            return;
+        }
+
+        LogInfo($"Broadcasting movement toggle to {followers.Count} connected follower(s): " +
+                $"{FormatConnectedFollowers()}.");
+        foreach (var follower in followers)
+        {
+            _ = SendToFollowerAsync(follower, new Message { Type = "toggleMovement" });
+        }
+    }
+
     private async Task SendToFollowerAsync(FollowerConnection follower, Message message)
     {
         try
@@ -152,6 +174,10 @@ public sealed class RemoteHotkeyNetwork : IDisposable
             if (message.Type == "key")
             {
                 LogInfo($"Sent key {(Keys)message.Key} to follower '{follower.Name}'.");
+            }
+            else if (message.Type == "toggleMovement")
+            {
+                LogInfo($"Sent movement toggle to follower '{follower.Name}'.");
             }
         }
         catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException or OperationCanceledException)
@@ -276,6 +302,11 @@ public sealed class RemoteHotkeyNetwork : IDisposable
                         var key = (Keys)message.Key;
                         LogInfo($"Received key {key} from leader; queued for input.");
                         _receivedKeys.Enqueue(key);
+                    }
+                    else if (message?.Type == "toggleMovement")
+                    {
+                        LogInfo("Received movement toggle from leader; queued for plugin state update.");
+                        _movementToggleCommands.Enqueue(1);
                     }
                 }
             }

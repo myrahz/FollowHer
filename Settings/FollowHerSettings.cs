@@ -41,6 +41,9 @@ public class RemoteControlSettings
     [Menu("Port", "TCP port shared by the leader and every follower.")]
     public RangeNode<int> Port { get; set; } = new(19876, 1024, 65535);
 
+    [Menu("Toggle Movement On All Followers", "Leader only: toggles FollowHer movement directly on every connected follower.")]
+    public HotkeyNode ToggleAllFollowersMovementHotkey { get; set; } = new(Keys.None);
+
     [Menu("Follower Hotkeys", "Leader only: map a hotkey on this machine to a key press on one named follower.")]
     public ContentNode<RemoteHotkeyBinding> FollowerHotkeys { get; set; } = new()
     {
