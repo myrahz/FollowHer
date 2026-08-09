@@ -315,18 +315,20 @@ namespace FollowHer
                 var playerName = GameController.Player?.GetComponent<Player>()?.PlayerName;
                 _remoteHotkeyNetwork.UpdateFollowerName(playerName);
 
-                while (_remoteHotkeyNetwork.TryDequeueKey(out var key))
+                while (_remoteHotkeyNetwork.TryDequeueKey(out var commandId, out var key))
                 {
                     DebugWindow.LogMsg($"[RemoteHotkeys] Injecting key {key} on follower '{playerName}'.");
                     _remoteKeyHandler.SinglePress(key);
+                    _remoteHotkeyNetwork.AcknowledgeExecutedCommand(commandId);
                 }
 
-                while (_remoteHotkeyNetwork.TryDequeueMovementState(out var movementEnabled))
+                while (_remoteHotkeyNetwork.TryDequeueMovementState(out var movementCommandId, out var movementEnabled))
                 {
                     _movementToggled = movementEnabled;
                     MovementEnabled = _movementToggled;
                     DebugWindow.LogMsg($"[RemoteHotkeys] Movement set {(_movementToggled ? "ON" : "OFF")} " +
                                        $"on follower '{playerName}'.");
+                    _remoteHotkeyNetwork.AcknowledgeExecutedCommand(movementCommandId);
                 }
             }
         }

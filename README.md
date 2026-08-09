@@ -98,6 +98,8 @@ The leader can trigger a single key press on one specific follower over TCP. Set
 
 An empty leader address is what selects leader/server mode. A populated address selects follower/client mode. Bindings and leader hotkeys are ignored on follower clients.
 
+Remote commands carry unique IDs. A follower acknowledges only after applying a movement state or injecting a key; the leader retries an unconfirmed command up to three times at 150 ms intervals. Retries are deduplicated on the follower, so a lost acknowledgement cannot execute the same command twice.
+
 ---
 
 ## Combat rule profiles

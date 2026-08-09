@@ -25,6 +25,7 @@ public sealed class RemoteHotkeyNetwork : IDisposable
         public string FollowerName { get; set; }
         public int Key { get; set; }
         public bool Enabled { get; set; }
+        public string CommandId { get; set; }
     }
 
     private sealed class FollowerConnection : IDisposable
@@ -32,6 +33,7 @@ public sealed class RemoteHotkeyNetwork : IDisposable
         private readonly TcpClient _client;
         private readonly StreamWriter _writer;
         private readonly SemaphoreSlim _writeLock = new(1, 1);
+        private readonly ConcurrentDictionary<string, TaskCompletionSource<bool>> _pendingAcks = new();
         private int _disposed;
 
         public string Name { get; set; }
@@ -55,6 +57,20 @@ public sealed class RemoteHotkeyNetwork : IDisposable
             }
         }
 
+        public TaskCompletionSource<bool> ExpectAcknowledgement(string commandId) =>
+            _pendingAcks.GetOrAdd(commandId, _ =>
+                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously));
+
+        public void Acknowledge(string commandId)
+        {
+            if (!string.IsNullOrWhiteSpace(commandId) && _pendingAcks.TryRemove(commandId, out var pending))
+            {
+                pending.TrySetResult(true);
+            }
+        }
+
+        public void ForgetAcknowledgement(string commandId) => _pendingAcks.TryRemove(commandId, out _);
+
         public void Dispose()
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
@@ -67,8 +83,12 @@ public sealed class RemoteHotkeyNetwork : IDisposable
     private readonly CancellationTokenSource _cancellation = new();
     private readonly ConcurrentDictionary<string, FollowerConnection> _followers =
         new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentQueue<Keys> _receivedKeys = new();
-    private readonly ConcurrentQueue<bool> _movementStateCommands = new();
+    private readonly ConcurrentQueue<(string CommandId, Keys Key)> _receivedKeyCommands = new();
+    private readonly ConcurrentQueue<(string CommandId, bool Enabled)> _movementStateCommands = new();
+    private readonly ConcurrentDictionary<string, byte> _queuedCommands = new();
+    private readonly ConcurrentDictionary<string, byte> _completedCommands = new();
+    private readonly ConcurrentQueue<string> _completedCommandOrder = new();
+    private readonly SemaphoreSlim _clientWriteLock = new(1, 1);
     private readonly object _clientWriterLock = new();
     private readonly string _leaderAddress;
     private readonly int _port;
@@ -130,9 +150,39 @@ public sealed class RemoteHotkeyNetwork : IDisposable
         SendRegistration();
     }
 
-    public bool TryDequeueKey(out Keys key) => _receivedKeys.TryDequeue(out key);
+    public bool TryDequeueKey(out string commandId, out Keys key)
+    {
+        if (_receivedKeyCommands.TryDequeue(out var command))
+        {
+            commandId = command.CommandId;
+            key = command.Key;
+            return true;
+        }
+        commandId = null;
+        key = Keys.None;
+        return false;
+    }
 
-    public bool TryDequeueMovementState(out bool enabled) => _movementStateCommands.TryDequeue(out enabled);
+    public bool TryDequeueMovementState(out string commandId, out bool enabled)
+    {
+        if (_movementStateCommands.TryDequeue(out var command))
+        {
+            commandId = command.CommandId;
+            enabled = command.Enabled;
+            return true;
+        }
+        commandId = null;
+        enabled = false;
+        return false;
+    }
+
+    public void AcknowledgeExecutedCommand(string commandId)
+    {
+        if (string.IsNullOrWhiteSpace(commandId)) return;
+        _queuedCommands.TryRemove(commandId, out _);
+        RememberCompletedCommand(commandId);
+        _ = SendClientMessageAsync(new Message { Type = "ack", CommandId = commandId });
+    }
 
     public void SendKey(string followerName, Keys key)
     {
@@ -145,7 +195,12 @@ public sealed class RemoteHotkeyNetwork : IDisposable
         }
 
         LogInfo($"Sending {key} to follower '{follower.Name}'.");
-        _ = SendToFollowerAsync(follower, new Message { Type = "key", Key = (int)key });
+        _ = SendCommandWithRetryAsync(follower, new Message
+        {
+            Type = "key",
+            Key = (int)key,
+            CommandId = Guid.NewGuid().ToString("N"),
+        });
     }
 
     public void SendMovementStateToAll(bool enabled)
@@ -163,7 +218,49 @@ public sealed class RemoteHotkeyNetwork : IDisposable
                 $"{FormatConnectedFollowers()}.");
         foreach (var follower in followers)
         {
-            _ = SendToFollowerAsync(follower, new Message { Type = "setMovement", Enabled = enabled });
+            _ = SendCommandWithRetryAsync(follower, new Message
+            {
+                Type = "setMovement",
+                Enabled = enabled,
+                CommandId = Guid.NewGuid().ToString("N"),
+            });
+        }
+    }
+
+    private async Task SendCommandWithRetryAsync(FollowerConnection follower, Message message)
+    {
+        const int maxAttempts = 4;
+        var acknowledgement = follower.ExpectAcknowledgement(message.CommandId);
+
+        try
+        {
+            for (var attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                await follower.SendAsync(message, _cancellation.Token).ConfigureAwait(false);
+                var completed = await Task.WhenAny(acknowledgement.Task,
+                    Task.Delay(150, _cancellation.Token)).ConfigureAwait(false);
+                if (completed == acknowledgement.Task)
+                {
+                    LogInfo($"Follower '{follower.Name}' confirmed executing {DescribeCommand(message)}.");
+                    return;
+                }
+
+                if (attempt < maxAttempts)
+                {
+                    LogInfo($"No execution confirmation from follower '{follower.Name}' for {DescribeCommand(message)}; " +
+                            $"retrying ({attempt + 1}/{maxAttempts}).");
+                }
+            }
+
+            LogError($"Follower '{follower.Name}' did not confirm executing {DescribeCommand(message)} after {maxAttempts} attempts.");
+        }
+        catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException or OperationCanceledException)
+        {
+            RemoveFollower(follower);
+        }
+        finally
+        {
+            follower.ForgetAcknowledgement(message.CommandId);
         }
     }
 
@@ -226,6 +323,11 @@ public sealed class RemoteHotkeyNetwork : IDisposable
                 if (line == null) break;
 
                 var message = JsonConvert.DeserializeObject<Message>(line);
+                if (message?.Type == "ack")
+                {
+                    connection.Acknowledge(message.CommandId);
+                    continue;
+                }
                 if (message?.Type == "shutdown")
                 {
                     var remoteAddress = (client.Client.RemoteEndPoint as IPEndPoint)?.Address;
@@ -300,14 +402,16 @@ public sealed class RemoteHotkeyNetwork : IDisposable
                     // necessarily named enum members and must not be rejected by Enum.IsDefined.
                     else if (message?.Type == "key" && message.Key > 0)
                     {
+                        if (!QueueCommandOrAcknowledgeDuplicate(message)) continue;
                         var key = (Keys)message.Key;
                         LogInfo($"Received key {key} from leader; queued for input.");
-                        _receivedKeys.Enqueue(key);
+                        _receivedKeyCommands.Enqueue((message.CommandId, key));
                     }
                     else if (message?.Type == "setMovement")
                     {
+                        if (!QueueCommandOrAcknowledgeDuplicate(message)) continue;
                         LogInfo($"Received movement {(message.Enabled ? "ON" : "OFF")} from leader; queued for plugin state update.");
-                        _movementStateCommands.Enqueue(message.Enabled);
+                        _movementStateCommands.Enqueue((message.CommandId, message.Enabled));
                     }
                 }
             }
@@ -342,22 +446,60 @@ public sealed class RemoteHotkeyNetwork : IDisposable
         lock (_clientWriterLock) writer = _clientWriter;
         if (writer == null) return;
 
-        _ = WriteRegistrationAsync(writer, _followerName);
+        _ = SendClientMessageAsync(new Message { Type = "register", FollowerName = _followerName });
     }
 
-    private async Task WriteRegistrationAsync(StreamWriter writer, string followerName)
+    private async Task SendClientMessageAsync(Message message)
     {
+        StreamWriter writer;
+        lock (_clientWriterLock) writer = _clientWriter;
+        if (writer == null) return;
+
         try
         {
-            await writer.WriteLineAsync(JsonConvert.SerializeObject(new Message
+            await _clientWriteLock.WaitAsync(_cancellation.Token).ConfigureAwait(false);
+            try
             {
-                Type = "register",
-                FollowerName = followerName,
-            })).ConfigureAwait(false);
-            LogInfo($"Sent registration for follower '{followerName}'; waiting for leader acknowledgement.");
+                await writer.WriteLineAsync(JsonConvert.SerializeObject(message)).ConfigureAwait(false);
+            }
+            finally
+            {
+                _clientWriteLock.Release();
+            }
+
+            if (message.Type == "register")
+            {
+                LogInfo($"Sent registration for follower '{message.FollowerName}'; waiting for leader acknowledgement.");
+            }
         }
-        catch (Exception ex) when (ex is IOException or ObjectDisposedException) { }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or OperationCanceledException) { }
     }
+
+    private bool QueueCommandOrAcknowledgeDuplicate(Message message)
+    {
+        if (string.IsNullOrWhiteSpace(message.CommandId)) return false;
+        if (_completedCommands.ContainsKey(message.CommandId))
+        {
+            _ = SendClientMessageAsync(new Message { Type = "ack", CommandId = message.CommandId });
+            return false;
+        }
+
+        return _queuedCommands.TryAdd(message.CommandId, 0);
+    }
+
+    private void RememberCompletedCommand(string commandId)
+    {
+        if (!_completedCommands.TryAdd(commandId, 0)) return;
+        _completedCommandOrder.Enqueue(commandId);
+        while (_completedCommandOrder.Count > 256 && _completedCommandOrder.TryDequeue(out var oldest))
+        {
+            _completedCommands.TryRemove(oldest, out _);
+        }
+    }
+
+    private static string DescribeCommand(Message message) => message.Type == "key"
+        ? $"key {(Keys)message.Key}"
+        : $"movement {(message.Enabled ? "ON" : "OFF")}";
 
     private void RemoveFollower(FollowerConnection follower)
     {
@@ -404,6 +546,7 @@ public sealed class RemoteHotkeyNetwork : IDisposable
 
         foreach (var follower in _followers.Values) follower.Dispose();
         _followers.Clear();
+        _clientWriteLock.Dispose();
         _cancellation.Dispose();
     }
 }
