@@ -42,6 +42,7 @@ namespace FollowHer
         private string _remoteNetworkConfiguration;
         private bool _leaderServerRequested;
         private bool _serverButtonBusy;
+        private bool _allFollowersMovementEnabled;
 
         public bool MovementEnabled { get; private set; }
         public bool FightingEnabled { get; private set; }
@@ -89,6 +90,7 @@ namespace FollowHer
                 // runtime override seeded from it, rather than being OR'd against it forever
                 // (which made the hotkey unable to ever turn movement off while Enable was on).
                 _movementToggled = Settings.Movement.Enable.Value;
+                _allFollowersMovementEnabled = Settings.Movement.Enable.Value;
                 Settings.Movement.Enable.OnValueChanged += (_, value) =>
                 {
                     _movementToggled = value;
@@ -135,6 +137,7 @@ namespace FollowHer
             try
             {
                 UpdateRemoteHotkeys();
+                ProcessLocalMovementToggle();
             }
             catch (Exception ex)
             {
@@ -157,10 +160,6 @@ namespace FollowHer
                 if (Settings.Hotkeys.PrecisionToggleKey.PressedOnce())
                 {
                     _isToggled = !_isToggled;
-                }
-                if (Settings.Hotkeys.MovementToggleKey.PressedOnce())
-                {
-                    _movementToggled = !_movementToggled;
                 }
                 if (Settings.Hotkeys.FightingToggleKey.PressedOnce())
                 {
@@ -275,7 +274,8 @@ namespace FollowHer
                 if (remoteSettings.ToggleAllFollowersMovementHotkey.Value != Keys.None &&
                     remoteSettings.ToggleAllFollowersMovementHotkey.PressedOnce())
                 {
-                    _remoteHotkeyNetwork.SendMovementToggleToAll();
+                    _allFollowersMovementEnabled = !_allFollowersMovementEnabled;
+                    _remoteHotkeyNetwork.SendMovementStateToAll(_allFollowersMovementEnabled);
                 }
 
                 // A follower becomes configurable as soon as it registers. Keep the generated
@@ -321,14 +321,24 @@ namespace FollowHer
                     _remoteKeyHandler.SinglePress(key);
                 }
 
-                while (_remoteHotkeyNetwork.TryDequeueMovementToggle())
+                while (_remoteHotkeyNetwork.TryDequeueMovementState(out var movementEnabled))
                 {
-                    _movementToggled = !_movementToggled;
+                    _movementToggled = movementEnabled;
                     MovementEnabled = _movementToggled;
-                    DebugWindow.LogMsg($"[RemoteHotkeys] Movement toggled {(_movementToggled ? "ON" : "OFF")} " +
+                    DebugWindow.LogMsg($"[RemoteHotkeys] Movement set {(_movementToggled ? "ON" : "OFF")} " +
                                        $"on follower '{playerName}'.");
                 }
             }
+        }
+
+        private void ProcessLocalMovementToggle()
+        {
+            if (!Settings.Hotkeys.MovementToggleKey.PressedOnce()) return;
+
+            _movementToggled = !_movementToggled;
+            MovementEnabled = _movementToggled;
+            DebugWindow.LogMsg($"[FollowHer] Local movement hotkey toggled movement " +
+                               $"{(_movementToggled ? "ON" : "OFF")}.");
         }
 
         private async void ToggleLeaderServer()

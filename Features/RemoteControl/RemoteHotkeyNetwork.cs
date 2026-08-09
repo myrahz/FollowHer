@@ -24,6 +24,7 @@ public sealed class RemoteHotkeyNetwork : IDisposable
         public string Type { get; set; }
         public string FollowerName { get; set; }
         public int Key { get; set; }
+        public bool Enabled { get; set; }
     }
 
     private sealed class FollowerConnection : IDisposable
@@ -67,7 +68,7 @@ public sealed class RemoteHotkeyNetwork : IDisposable
     private readonly ConcurrentDictionary<string, FollowerConnection> _followers =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentQueue<Keys> _receivedKeys = new();
-    private readonly ConcurrentQueue<byte> _movementToggleCommands = new();
+    private readonly ConcurrentQueue<bool> _movementStateCommands = new();
     private readonly object _clientWriterLock = new();
     private readonly string _leaderAddress;
     private readonly int _port;
@@ -131,7 +132,7 @@ public sealed class RemoteHotkeyNetwork : IDisposable
 
     public bool TryDequeueKey(out Keys key) => _receivedKeys.TryDequeue(out key);
 
-    public bool TryDequeueMovementToggle() => _movementToggleCommands.TryDequeue(out _);
+    public bool TryDequeueMovementState(out bool enabled) => _movementStateCommands.TryDequeue(out enabled);
 
     public void SendKey(string followerName, Keys key)
     {
@@ -147,22 +148,22 @@ public sealed class RemoteHotkeyNetwork : IDisposable
         _ = SendToFollowerAsync(follower, new Message { Type = "key", Key = (int)key });
     }
 
-    public void SendMovementToggleToAll()
+    public void SendMovementStateToAll(bool enabled)
     {
         if (!IsLeader) return;
 
         var followers = new List<FollowerConnection>(_followers.Values);
         if (followers.Count == 0)
         {
-            LogInfo("Movement toggle ignored: no followers are connected.");
+            LogInfo($"Set movement {(enabled ? "ON" : "OFF")} ignored: no followers are connected.");
             return;
         }
 
-        LogInfo($"Broadcasting movement toggle to {followers.Count} connected follower(s): " +
+        LogInfo($"Setting movement {(enabled ? "ON" : "OFF")} on {followers.Count} connected follower(s): " +
                 $"{FormatConnectedFollowers()}.");
         foreach (var follower in followers)
         {
-            _ = SendToFollowerAsync(follower, new Message { Type = "toggleMovement" });
+            _ = SendToFollowerAsync(follower, new Message { Type = "setMovement", Enabled = enabled });
         }
     }
 
@@ -175,9 +176,9 @@ public sealed class RemoteHotkeyNetwork : IDisposable
             {
                 LogInfo($"Sent key {(Keys)message.Key} to follower '{follower.Name}'.");
             }
-            else if (message.Type == "toggleMovement")
+            else if (message.Type == "setMovement")
             {
-                LogInfo($"Sent movement toggle to follower '{follower.Name}'.");
+                LogInfo($"Sent movement {(message.Enabled ? "ON" : "OFF")} to follower '{follower.Name}'.");
             }
         }
         catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException or OperationCanceledException)
@@ -303,10 +304,10 @@ public sealed class RemoteHotkeyNetwork : IDisposable
                         LogInfo($"Received key {key} from leader; queued for input.");
                         _receivedKeys.Enqueue(key);
                     }
-                    else if (message?.Type == "toggleMovement")
+                    else if (message?.Type == "setMovement")
                     {
-                        LogInfo("Received movement toggle from leader; queued for plugin state update.");
-                        _movementToggleCommands.Enqueue(1);
+                        LogInfo($"Received movement {(message.Enabled ? "ON" : "OFF")} from leader; queued for plugin state update.");
+                        _movementStateCommands.Enqueue(message.Enabled);
                     }
                 }
             }
