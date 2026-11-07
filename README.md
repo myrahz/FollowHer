@@ -246,6 +246,8 @@ See [Runtime controls](#runtime-controls-hotkeys--overlay). Precision Key / Prec
 | **Movement Skill Max Distance** | 1000 | Don't use a movement skill for a hop longer than this. |
 | **Max Waypoint Distance** | 400 | How far apart path waypoints may be placed (world units) where the way ahead is clear. Corners keep tight waypoints on their own; this only stretches the straight sections. See [Movement skills](#movement-skills). |
 | **Wall Clearance** | 3 | Grid cells (~11 world units each) the path tries to keep off walls. Shortest-path routes hug walls, which leaves ground dashes no clear corridor; this makes A* pay extra for cells near walls and stops waypoint smoothing from cutting corners. Soft preference - a narrower gap is still used if it's the only way. `0` = plain shortest path. |
+| **Plan Jumps In Pathfinding** | on | Let the path jump over gaps and low obstacles with movement skills (Leap Slam, Flame Dash, Frostblink) when that beats the walk. See [Jumping obstacles](#jumping-obstacles). |
+| **Jump Cost (cells)** | 20 | How much walking one jump is worth to the planner. A jump is taken only when the walkable detour is longer than the jump plus this. |
 | **Input Frequency (ms)** | 50 | Minimum delay between successive movement inputs. |
 | **Enable Pathfinding Fallback** | on | Use A* pathfinding around obstacles. Off = always walk straight at the target. |
 | **Movement Skills** | — | Auto-discovered movement skills with per-skill options. |
@@ -403,6 +405,17 @@ Two mechanically different kinds of movement skill, each controlled by its own s
 Both are bounded by **Movement Skill Min/Max Distance**. Which bucket a skill lands in is decided by its **Travels Through Obstacles** flag (auto-set on discovery for known skills).
 
 **Dash Shortcut Path Ratio** ties into Dash Enabled: when LOS to the leader is blocked and a blink skill is ready, the follower compares the walkable detour to the straight-line distance and blinks straight to the leader if the detour is at least that many times longer — instead of pathfinding the long way around.
+
+### Jumping obstacles
+
+Leap Slam, Flame Dash and Frostblink can carry you over a gap or low obstacle that you can't walk across. With **Plan Jumps In Pathfinding** on, A* treats those as extra moves: from a cell beside an obstacle it looks along 16 directions for the first walkable cell past it, provided nothing along the way blocks the **targeting** layer (a solid wall stops a jump; a chasm doesn't). The route takes the jump when the walkable detour is longer than the jump plus **Jump Cost**.
+
+Each movement skill has its own **Max Jump Distance** (world units, in the Movement Skills list). `0` means that skill is never used for jumps. Flame Dash, Frostblink and Leap Slam start at 400 / 500 / 400 — **these are estimates, not read from the game**; the real reach depends on your gems and gear, so set them to what you actually see. Too low just misses shortcuts; too high and the character falls short of the landing.
+
+How it behaves:
+- Jumps are only planned while a suitable skill is **off cooldown**. If everything is down, the route walks around; when one comes back the route is replanned.
+- The character walks to the takeoff cell (a tight tolerance, unlike normal waypoints), then uses the shortest-range ready skill that reaches the landing, aimed at it. If that skill is on cooldown at the takeoff it waits there.
+- If the landing isn't reached within ~2.5 s of the first attempt, that landing is banned for the route and the path is replanned around it.
 
 ### Why a movement skill never fires while pathfinding
 

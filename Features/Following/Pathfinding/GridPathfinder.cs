@@ -28,6 +28,111 @@ public static class GridPathfinder
     [ThreadStatic] private static int[] _penaltyStamp;
     [ThreadStatic] private static int[] _penalty;
 
+    // Equals the current generation when the cell was last reached by a jump, anything else when by
+    // walking - lets BuildPath report which steps of the route are jumps.
+    [ThreadStatic] private static int[] _jumpStamp;
+
+    /// <summary>What A* needs to consider jumping over obstacles. A jump is an extra edge from a cell
+    /// beside an obstacle to the first walkable cell past it, along one of 16
+    /// rays: every cell the ray crosses must be see-through on the targeting layer (a wall stops it),
+    /// and the part it flies over must be unwalkable on the walkable layer (otherwise it's just a
+    /// walk).</summary>
+    public sealed class JumpOptions
+    {
+        public int[][] TargetingGrid;
+
+        /// <summary>Longest jump, in grid cells.</summary>
+        public int MaxCells;
+
+        /// <summary>Cost of one jump on the 10-per-straight-step scale, on top of its length.</summary>
+        public int Cost;
+
+        /// <summary>Landing cells that already failed in practice - never offered again.</summary>
+        public HashSet<(int x, int y)> BannedLandings;
+    }
+
+    private const int JumpDirectionCount = 16;
+    private const int JumpMinCells = 2;
+    private const int JumpTakeoffReach = 2;
+    private const int JumpFirstObstacleWithin = 3;
+    private const int TargetingBlockValue = 4;
+
+    private static readonly (float dx, float dy)[] JumpDirections = BuildJumpDirections();
+
+    private static (float dx, float dy)[] BuildJumpDirections()
+    {
+        var dirs = new (float dx, float dy)[JumpDirectionCount];
+        for (var i = 0; i < JumpDirectionCount; i++)
+        {
+            var angle = i * 2 * Math.PI / JumpDirectionCount;
+            dirs[i] = ((float)Math.Cos(angle), (float)Math.Sin(angle));
+        }
+
+        return dirs;
+    }
+
+    private static bool NearBlocked(int[][] grid, int x, int y, int radius)
+    {
+        for (var dy = -radius; dy <= radius; dy++)
+        {
+            for (var dx = -radius; dx <= radius; dx++)
+            {
+                if (!IsWalkable(grid, x + dx, y + dy)) return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Walks one ray from a takeoff cell and reports where a jump along it would land: the
+    /// first walkable cell after an unwalkable stretch, provided nothing on the way blocks the
+    /// targeting layer and the obstacle starts close to the takeoff. Null when there's no such cell
+    /// within range.</summary>
+    private static (int x, int y, int steps)? FindJumpLanding(int[][] grid, JumpOptions jumps, int x, int y, int direction)
+    {
+        var (dx, dy) = JumpDirections[direction];
+        var crossed = false;
+        var lastX = int.MinValue;
+        var lastY = int.MinValue;
+
+        for (var s = 1; s <= jumps.MaxCells; s++)
+        {
+            var px = x + (int)Math.Round(dx * s);
+            var py = y + (int)Math.Round(dy * s);
+            if (px == lastX && py == lastY) continue;
+            lastX = px;
+            lastY = py;
+
+            // A wall (or the edge of the map) stops the jump; a gap or low obstacle doesn't.
+            if (!InBounds(jumps.TargetingGrid, px, py) || jumps.TargetingGrid[py][px] >= TargetingBlockValue) return null;
+
+            if (!IsWalkable(grid, px, py))
+            {
+                crossed = true;
+                continue;
+            }
+
+            if (!crossed)
+            {
+                // Still on ground before any obstacle - the jump has to start at the obstacle, not
+                // somewhere far back along the ray.
+                if (s >= JumpFirstObstacleWithin) return null;
+                continue;
+            }
+
+            if (s < JumpMinCells) return null;
+
+            // Land with ground ahead as well, not on the last sliver of a ledge.
+            var nx = x + (int)Math.Round(dx * (s + 1));
+            var ny = y + (int)Math.Round(dy * (s + 1));
+            if (!IsWalkable(grid, nx, ny)) return null;
+
+            return (px, py, s);
+        }
+
+        return null;
+    }
+
     // Extra cost (on the 10-per-straight-step scale) per cell of encroachment into the clearance
     // radius. A cell touching a wall with a 3-cell radius costs 10 + 3*8 = 34, so the route will take a
     // detour of a few cells to stay off the wall, but a narrow gap is still passable.
@@ -47,6 +152,7 @@ public static class GridPathfinder
         _closedStamp = new int[cellCount];
         _penaltyStamp = new int[cellCount];
         _penalty = new int[cellCount];
+        _jumpStamp = new int[cellCount];
         _generation = 1;
     }
 
@@ -130,8 +236,13 @@ public static class GridPathfinder
     /// <param name="wallClearanceCells">Soft preference for staying this many cells off walls: cells
     /// within it cost extra, scaled by how close they are. 0 = plain shortest path. It never forbids a
     /// cell, so a gap narrower than the margin is still taken when it's the only way.</param>
+    /// <param name="jumps">When set, the search may also jump over obstacles (see
+    /// <see cref="JumpOptions"/>). The cells of the returned path that were reached by a jump are
+    /// added to <paramref name="jumpLandings"/>; the cell before each one (or the start) is where the
+    /// jump is taken from.</param>
     public static List<(int x, int y)> AStar(int[][] grid, (int x, int y) start, (int x, int y) target,
-        int maxNodesToExplore, bool allowPartialPath, out bool isPartial, int wallClearanceCells = 0)
+        int maxNodesToExplore, bool allowPartialPath, out bool isPartial, int wallClearanceCells = 0,
+        JumpOptions jumps = null, HashSet<(int x, int y)> jumpLandings = null)
     {
         isPartial = false;
         if (grid == null) return null;
@@ -190,7 +301,7 @@ public static class GridPathfinder
                 bestIndex = currentIndex;
             }
 
-            if (currentIndex == targetIndex) return BuildPath(currentIndex, startIndex, width);
+            if (currentIndex == targetIndex) return BuildPath(currentIndex, startIndex, width, jumpLandings);
 
             var currentG = _gScore[currentIndex];
 
@@ -228,11 +339,43 @@ public static class GridPathfinder
                 _seenStamp[neighborIndex] = generation;
                 _gScore[neighborIndex] = tentativeG;
                 _parent[neighborIndex] = currentIndex;
+                _jumpStamp[neighborIndex] = 0;
 
                 var h = Heuristic(nx, ny, target.x, target.y);
                 // Re-queued at the improved priority when a cheaper route is found; the closed check
                 // above discards the stale entry.
                 open.Enqueue(neighborIndex, (tentativeG + h, h));
+            }
+
+            // Jump edges: only worth looking for beside an obstacle, which keeps the rays off open
+            // ground where there is nothing to jump.
+            if (jumps != null && jumps.MaxCells >= JumpMinCells && NearBlocked(grid, cx, cy, JumpTakeoffReach))
+            {
+                for (var direction = 0; direction < JumpDirectionCount; direction++)
+                {
+                    var landing = FindJumpLanding(grid, jumps, cx, cy, direction);
+                    if (landing == null) continue;
+
+                    var (lx, ly, steps) = landing.Value;
+                    if (jumps.BannedLandings != null && jumps.BannedLandings.Contains((lx, ly))) continue;
+
+                    var landingIndex = ly * width + lx;
+                    if (_closedStamp[landingIndex] == generation) continue;
+
+                    // 11 per step rather than 10: the heuristic is octile, which overestimates a
+                    // diagonal ray's true length slightly, and an inconsistent edge cost would let a
+                    // jump look cheaper than it can be.
+                    var jumpG = currentG + jumps.Cost + steps * 11;
+                    if (_seenStamp[landingIndex] == generation && jumpG >= _gScore[landingIndex]) continue;
+
+                    _seenStamp[landingIndex] = generation;
+                    _gScore[landingIndex] = jumpG;
+                    _parent[landingIndex] = currentIndex;
+                    _jumpStamp[landingIndex] = generation;
+
+                    var jumpH = Heuristic(lx, ly, target.x, target.y);
+                    open.Enqueue(landingIndex, (jumpG + jumpH, jumpH));
+                }
             }
         }
 
@@ -240,19 +383,24 @@ public static class GridPathfinder
         if (allowPartialPath && open.Count > 0 && bestIndex != startIndex)
         {
             isPartial = true;
-            return BuildPath(bestIndex, startIndex, width);
+            return BuildPath(bestIndex, startIndex, width, jumpLandings);
         }
 
         return null;
     }
 
-    private static List<(int x, int y)> BuildPath(int endIndex, int startIndex, int width)
+    private static List<(int x, int y)> BuildPath(int endIndex, int startIndex, int width,
+        HashSet<(int x, int y)> jumpLandings)
     {
+        jumpLandings?.Clear();
+
         var path = new List<(int x, int y)>();
         var current = endIndex;
         while (current != -1 && current != startIndex)
         {
-            path.Add((current % width, current / width));
+            var cell = (current % width, current / width);
+            path.Add(cell);
+            if (jumpLandings != null && _jumpStamp[current] == _generation) jumpLandings.Add(cell);
             current = _parent[current];
         }
 

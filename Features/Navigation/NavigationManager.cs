@@ -191,6 +191,13 @@ public class NavigationManager
                     $"{target.Label} - {distance:F0} away, {_pathFollower.RemainingWaypoints} waypoint(s) left");
                 return true;
 
+            case PathStepKind.Jump:
+                _consecutiveNoPath = 0;
+                Status = _followManager.ExecuteJump(step, _pathFollower)
+                    ? $"{target.Label} - {distance:F0} away, jumping an obstacle"
+                    : $"{target.Label} - {distance:F0} away, waiting at a jump for a skill to be ready";
+                return true;
+
             case PathStepKind.Direct:
                 _consecutiveNoPath = 0;
                 Move(step.World, step.Grid, $"{target.Label} - {distance:F0} away, walking straight (pathfinding is off)");

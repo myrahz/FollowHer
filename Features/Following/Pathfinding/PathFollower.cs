@@ -25,6 +25,10 @@ public enum PathStepKind
 
     /// <summary>A* found no walkable route to the target.</summary>
     NoPath,
+
+    /// <summary>Standing at the takeoff of a planned jump: use a jump skill aimed at the returned
+    /// landing point rather than walking to it.</summary>
+    Jump,
 }
 
 public readonly struct PathStep
@@ -56,6 +60,9 @@ public readonly struct PathStep
 
     public static PathStep Arrived(bool justComputed = false) =>
         new(PathStepKind.Arrived, Vector3.Zero, Vector2.Zero, justComputed);
+
+    public static PathStep JumpTo(Vector3 world, Vector2 grid, bool justComputed) =>
+        new(PathStepKind.Jump, world, grid, justComputed);
 
     public static PathStep NoPath(bool justComputed) =>
         new(PathStepKind.NoPath, Vector3.Zero, Vector2.Zero, justComputed);
@@ -96,10 +103,41 @@ public class PathFollower
     private bool _currentPathIsPartial;
     private DateTime _nextPathRecomputeAt = DateTime.MinValue;
 
-    public PathFollower(GameController gameController, LineOfSight lineOfSight)
+    // Jump planning. The provider reports the longest jump (world units) any usable skill can make
+    // right now, 0 when none - supplied by whoever owns the skills, so this class stays free of
+    // input and skill state.
+    private readonly Func<float> _jumpRangeProvider;
+    private readonly HashSet<(int x, int y)> _jumpLandings = new();
+    private readonly HashSet<(int x, int y)> _bannedLandings = new();
+    private float _jumpRangeAtPlan;
+    private DateTime? _jumpFirstAttemptAt;
+
+    // How close to the takeoff cell the jump is taken from. Much tighter than the normal waypoint
+    // tolerance: a jump aimed from 300 units back would start from the wrong side of the obstacle.
+    private const float JumpTakeoffWorldDistance = 45f;
+
+    // Close enough to the landing cell to call the jump done.
+    private const float JumpLandedWorldDistance = 80f;
+
+    // A jump that hasn't landed this long after the first attempt didn't work (fell short, blocked
+    // by something the grids don't show) - ban that landing and plan around it.
+    private const int JumpGiveUpMs = 2500;
+
+    public PathFollower(GameController gameController, LineOfSight lineOfSight, Func<float> jumpRangeProvider = null)
     {
         _gameController = gameController;
         _lineOfSight = lineOfSight;
+        _jumpRangeProvider = jumpRangeProvider;
+    }
+
+    /// <summary>Call when a jump skill was actually used for the current <see cref="PathStepKind.Jump"/>
+    /// step. Starts the clock that bans the landing if the character doesn't arrive.</summary>
+    public void ReportJumpAttempt() => _jumpFirstAttemptAt ??= DateTime.Now;
+
+    private float CurrentJumpRange()
+    {
+        if (_jumpRangeProvider == null || !FollowHer.Instance.Settings.Movement.EnableJumpPathing) return 0f;
+        return _jumpRangeProvider();
     }
 
     public int WaypointCount => _currentPath?.Count ?? 0;
@@ -170,10 +208,30 @@ public class PathFollower
                     return PathStep.NoTerrainData(targetWorld, targetGrid);
                 }
 
+                var jumpRange = CurrentJumpRange();
+                GridPathfinder.JumpOptions jumpOptions = null;
+                if (jumpRange > 0f)
+                {
+                    var targetingGrid = _lineOfSight.GetGridReference(LineOfSightDataType.Terrain);
+                    if (targetingGrid != null)
+                    {
+                        jumpOptions = new GridPathfinder.JumpOptions
+                        {
+                            TargetingGrid = targetingGrid,
+                            MaxCells = (int)(jumpRange / GridToWorldMultiplier),
+                            Cost = FollowHer.Instance.Settings.Movement.JumpPathCost.Value * 10,
+                            BannedLandings = _bannedLandings,
+                        };
+                    }
+                }
+
                 var rawPath = GridPathfinder.AStar(grid, start, target, MaxPathSearchNodes,
                     allowPartialPath: true, out var isPartial,
-                    FollowHer.Instance.Settings.Movement.WallClearance.Value);
+                    FollowHer.Instance.Settings.Movement.WallClearance.Value,
+                    jumpOptions, _jumpLandings);
 
+                _jumpRangeAtPlan = jumpOptions != null ? jumpRange : 0f;
+                _jumpFirstAttemptAt = null;
                 _currentPath = rawPath is { Count: > 0 } ? SmoothPath(rawPath) : null;
                 _currentPathIsPartial = _currentPath != null && isPartial;
                 _currentPathIndex = 0;
@@ -188,8 +246,41 @@ public class PathFollower
             {
                 var node = _currentPath[_currentPathIndex];
                 var nodeWorld = GridToWorld(node.x, node.y);
+                var distance = Vector3.Distance(player.PosNum, nodeWorld);
 
-                if (Vector3.Distance(player.PosNum, nodeWorld) <= waypointArrivalWorldDistance)
+                if (_jumpLandings.Contains(node))
+                {
+                    // Every earlier waypoint is behind us, so we're at the takeoff. Landing is
+                    // judged tightly; the usual tolerance would count the jump as done before it
+                    // was ever made.
+                    if (distance <= JumpLandedWorldDistance)
+                    {
+                        _jumpFirstAttemptAt = null;
+                        _currentPathIndex++;
+                        continue;
+                    }
+
+                    if (_jumpFirstAttemptAt is { } startedAt &&
+                        (DateTime.Now - startedAt).TotalMilliseconds > JumpGiveUpMs)
+                    {
+                        // Tried and didn't get there. Plan again without this landing instead of
+                        // casting at it forever.
+                        _bannedLandings.Add(node);
+                        _currentPath = null;
+                        _currentPathTarget = null;
+                        _jumpFirstAttemptAt = null;
+                        return GetNextStep(target, waypointArrivalWorldDistance);
+                    }
+
+                    return PathStep.JumpTo(nodeWorld, new Vector2(node.x, node.y), justComputed);
+                }
+
+                // The waypoint before a jump is the takeoff, which has to be reached properly.
+                var isTakeoff = _currentPathIndex + 1 < _currentPath.Count &&
+                                _jumpLandings.Contains(_currentPath[_currentPathIndex + 1]);
+                var tolerance = isTakeoff ? JumpTakeoffWorldDistance : waypointArrivalWorldDistance;
+
+                if (distance <= tolerance)
                 {
                     _currentPathIndex++;
                     continue;
@@ -291,6 +382,10 @@ public class PathFollower
         _currentPathTarget = null;
         _currentPathIsPartial = false;
         _nextPathRecomputeAt = DateTime.MinValue;
+        _jumpLandings.Clear();
+        _bannedLandings.Clear();
+        _jumpRangeAtPlan = 0f;
+        _jumpFirstAttemptAt = null;
     }
 
     private bool NeedsPathRecompute((int x, int y) target)
@@ -298,6 +393,11 @@ public class PathFollower
         if (_currentPathTarget == null) return true;
         if (_currentPath == null) return DateTime.Now >= _nextPathRecomputeAt;
         if (_currentPathIndex >= _currentPath.Count) return true;
+
+        // The route was planned while no jump skill was ready; one is now, so a shortcut may exist.
+        // Only that direction triggers a replan - a skill going on cooldown mid-route must not throw
+        // away a jump we're already walking to, we'd rather wait for it.
+        if (_jumpRangeAtPlan <= 0f && DateTime.Now >= _nextPathRecomputeAt && CurrentJumpRange() > 0f) return true;
 
         var drift = Vector2.Distance(
             new Vector2(target.x, target.y),
@@ -332,6 +432,25 @@ public class PathFollower
         {
             var best = i;
             var furthest = Math.Min(rawPath.Count - 1, i + maxLookaheadCells);
+
+            // A jump is not a walkable line, so smoothing must neither merge across one nor drop its
+            // endpoints: a landing is always kept, and a hop stops at the takeoff (the cell before
+            // the next landing).
+            if (_jumpLandings.Contains(rawPath[i]))
+            {
+                smoothed.Add(rawPath[i]);
+                i++;
+                continue;
+            }
+
+            for (var k = i + 1; k <= furthest; k++)
+            {
+                if (_jumpLandings.Contains(rawPath[k]))
+                {
+                    furthest = k - 1;
+                    break;
+                }
+            }
 
             // Probe from the furthest candidate backwards, but a bounded number of times: each probe
             // is a full ray, and at a large waypoint distance a per-cell walk back would make

@@ -51,6 +51,29 @@ namespace FollowHer.Core.Combat.Skills
             BlinkTypeMovementSkills.Contains(NormalizeSkillName(skill.Name)) ||
             BlinkTypeMovementSkills.Contains(NormalizeSkillName(skill.InternalName));
 
+        // Skills that carry the character over gaps and low obstacles, with a starting estimate of
+        // their range in world units. These are guesses, not read from the game - the real range
+        // moves with gems and gear - so they err low (a shortcut missed is harmless, a jump that
+        // falls short wastes a few seconds) and are meant to be corrected in the skill's settings.
+        private static readonly Dictionary<string, int> JumpSkillDefaultRanges = new()
+        {
+            ["flamedash"] = 400,
+            ["frostblink"] = 500,
+            ["leapslam"] = 400,
+        };
+
+        private static void ApplyJumpDefaults(ActiveSkill activeSkill, ActorSkill skill)
+        {
+            if (activeSkill.JumpDefaultsApplied) return;
+            activeSkill.JumpDefaultsApplied = true;
+
+            if (JumpSkillDefaultRanges.TryGetValue(NormalizeSkillName(skill.Name), out var range) ||
+                JumpSkillDefaultRanges.TryGetValue(NormalizeSkillName(skill.InternalName), out range))
+            {
+                activeSkill.MaxJumpDistance.Value = range;
+            }
+        }
+
         public void Initialize()
         {
             try
@@ -111,6 +134,8 @@ namespace FollowHer.Core.Combat.Skills
                                     TravelsThroughObstacles = new ToggleNode(IsBlinkTypeMovementSkill(skill))
                                 };
                             }
+
+                            ApplyJumpDefaults(activeSkill, skill);
 
                             activeSkill.LineOfSightType.SetListValues(
                             [

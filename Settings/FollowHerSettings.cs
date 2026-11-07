@@ -110,6 +110,12 @@ public class MovementSettings
     [Menu("Wall Clearance", "How many grid cells the path tries to stay away from walls and obstacles (about 11 world units each). Routes that hug walls leave movement skills no room - ground dashes need a clear corridor. This is a soft preference: a narrower gap is still used when it's the only way through. 0 = plain shortest path.")]
     public RangeNode<int> WallClearance { get; set; } = new(3, 0, 8);
 
+    [Menu("Plan Jumps In Pathfinding", "Let the path use movement skills that jump over gaps and low obstacles (Leap Slam, Flame Dash, Frostblink) as a shortcut when walking around is much longer. Each skill's reach is its Max Jump Distance in the Movement Skills list; a skill with 0 there is never used for this.")]
+    public ToggleNode EnableJumpPathing { get; set; } = new(true);
+
+    [Menu("Jump Cost (cells)", "How much walking a jump is worth to the path planner, in grid cells. A jump is only taken when the walkable detour is longer than the jump plus this. Raise it to make the character prefer walking; lower it to jump more eagerly.")]
+    public RangeNode<int> JumpPathCost { get; set; } = new(20, 0, 100);
+
     [Menu("Input Frequency (ms)", "Minimum delay between successive movement inputs")]
     public RangeNode<int> InputFrequency { get; set; } = new(50, 1, 100);
 

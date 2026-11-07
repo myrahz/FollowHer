@@ -95,11 +95,12 @@ public class FollowManager
         _skillHandler = skillHandler;
         _skillMonitor = skillMonitor;
         _lineOfSight = new LineOfSight(gameController);
-        _pathFollower = new PathFollower(gameController, _lineOfSight);
+        _pathFollower = new PathFollower(gameController, _lineOfSight, LongestUsableJumpWorld);
 
         // Its own PathFollower, so switching between following and manual navigation never inherits
         // the other's cached route.
-        Navigation = new NavigationManager(gameController, this, new PathFollower(gameController, _lineOfSight));
+        Navigation = new NavigationManager(gameController, this,
+            new PathFollower(gameController, _lineOfSight, LongestUsableJumpWorld));
         FollowHer.Instance.Navigation = Navigation;
 
         EventBus.Instance.Subscribe<RenderEvent>(HandleRender);
@@ -423,6 +424,10 @@ public class FollowManager
         {
             case PathStepKind.Moving:
                 return ExecuteMovement(step.World, step.Grid);
+
+            case PathStepKind.Jump:
+                ExecuteJump(step, _pathFollower);
+                return true;
 
             // Pathfinding disabled, or the area's terrain isn't readable yet - walk straight at the
             // leader. Unchanged from before terrain availability became its own outcome: for
@@ -1023,6 +1028,51 @@ public class FollowManager
                 new Vector2(path[i].x, path[i].y));
         }
         return total;
+    }
+
+    // Movement skills the path planner may jump with right now: enabled, given a jump range, and off
+    // cooldown. Ordered shortest range first so a short hop doesn't burn the longest-range skill.
+    private List<ActiveSkill> UsableJumpSkills() =>
+        FollowHer.Instance.Settings.Movement.MovementSkills.Content
+            .Where(s => s.Enabled && s.Name != MoveSkillName && s.MaxJumpDistance.Value > 0 &&
+                        _skillMonitor.CanUseSkill(s))
+            .OrderBy(s => s.MaxJumpDistance.Value)
+            .ToList();
+
+    /// <summary>The longest jump (world units) any usable skill can make right now, 0 if none or in a
+    /// town. This is what the path planner is told it may jump, so it never plans a jump nothing can
+    /// make.</summary>
+    private float LongestUsableJumpWorld()
+    {
+        if (IsInTownOrHideout()) return 0f;
+
+        var skills = UsableJumpSkills();
+        return skills.Count == 0 ? 0f : skills.Max(s => s.MaxJumpDistance.Value);
+    }
+
+    /// <summary>Takes a planned jump: aims the shortest-range usable skill that reaches the landing
+    /// at it. If none is ready (cooldown, or the one that was planned with is down), holds still at
+    /// the takeoff and waits - the jump was chosen over a long walk, so it's worth waiting out.
+    /// Returns whether a skill was used.</summary>
+    internal bool ExecuteJump(PathStep step, PathFollower follower)
+    {
+        var player = _gameController.Player;
+        if (player == null) return false;
+
+        var distance = Vector3.Distance(player.PosNum, step.World);
+        var skill = UsableJumpSkills().FirstOrDefault(s => s.MaxJumpDistance.Value >= distance);
+        if (skill == null)
+        {
+            LogDebug($"Jump: no ready skill reaches {distance:F0} units - waiting at the takeoff");
+            StopMovement();
+            return false;
+        }
+
+        if (!ExecuteMovement(step.World, step.Grid, skill)) return false;
+
+        follower.ReportJumpAttempt();
+        LogDebug($"Jump: '{skill.Name}' toward {step.Grid} ({distance:F0} units, skill reaches {skill.MaxJumpDistance.Value})");
+        return true;
     }
 
     private ActiveSkill TryGetMovementSkill(Vector2 playerGrid, Vector2 targetGrid)
