@@ -410,7 +410,7 @@ Both are bounded by **Movement Skill Min/Max Distance**. Which bucket a skill la
 
 Leap Slam, Flame Dash and Frostblink can carry you over a gap or low obstacle that you can't walk across. With **Plan Jumps In Pathfinding** on, A* treats those as extra moves: from a cell beside an obstacle it looks along 16 directions for the first walkable cell past it, provided nothing along the way blocks the **targeting** layer (a solid wall stops a jump; a chasm doesn't). The route takes the jump when the walkable detour is longer than the jump plus **Jump Cost**.
 
-Each movement skill has its own **Max Jump Distance** (world units, in the Movement Skills list). `0` means that skill is never used for jumps. Flame Dash, Frostblink and Leap Slam start at 400 / 500 / 400 — **these are estimates, not read from the game**; the real reach depends on your gems and gear, so set them to what you actually see. Too low just misses shortcuts; too high and the character falls short of the landing.
+Each movement skill has its own **Max Jump Distance** (world units, in the Movement Skills list). `0` means that skill is never used for jumps. Flame Dash, Frostblink, Leap Slam, Blink Arrow and Lightning Warp start at 400 / 500 / 400 / 500 / 450 — **these are estimates, not read from the game**; the real reach depends on your gems and gear, so set them to what you actually see. Too low just misses shortcuts; too high and the character falls short of the landing.
 
 How it behaves:
 - Jumps are only planned while a suitable skill is **off cooldown**. If everything is down, the route walks around; when one comes back the route is replanned.

@@ -55,22 +55,38 @@ namespace FollowHer.Core.Combat.Skills
         // their range in world units. These are guesses, not read from the game - the real range
         // moves with gems and gear - so they err low (a shortcut missed is harmless, a jump that
         // falls short wastes a few seconds) and are meant to be corrected in the skill's settings.
-        private static readonly Dictionary<string, int> JumpSkillDefaultRanges = new()
+        //
+        // "Since" is the defaults version that introduced the entry: a skill already seeded at an
+        // older version still picks up entries added after it, but is never re-seeded for one it has
+        // already had (that would overwrite a range the user set, or zeroed on purpose).
+        private const int JumpDefaultsCurrentVersion = 2;
+
+        private static readonly Dictionary<string, (int range, int since)> JumpSkillDefaults = new()
         {
-            ["flamedash"] = 400,
-            ["frostblink"] = 500,
-            ["leapslam"] = 400,
+            ["flamedash"] = (400, 1),
+            ["frostblink"] = (500, 1),
+            ["leapslam"] = (400, 1),
+            ["blinkarrow"] = (500, 2),
+            ["lightningwarp"] = (450, 2),
         };
 
         private static void ApplyJumpDefaults(ActiveSkill activeSkill, ActorSkill skill)
         {
-            if (activeSkill.JumpDefaultsApplied) return;
-            activeSkill.JumpDefaultsApplied = true;
-
-            if (JumpSkillDefaultRanges.TryGetValue(NormalizeSkillName(skill.Name), out var range) ||
-                JumpSkillDefaultRanges.TryGetValue(NormalizeSkillName(skill.InternalName), out range))
+            // Settings saved while this was a one-time flag were seeded with the version-1 entries.
+            if (activeSkill.JumpDefaultsVersion < 1 && activeSkill.JumpDefaultsApplied)
             {
-                activeSkill.MaxJumpDistance.Value = range;
+                activeSkill.JumpDefaultsVersion = 1;
+            }
+
+            var seededVersion = activeSkill.JumpDefaultsVersion;
+            if (seededVersion >= JumpDefaultsCurrentVersion) return;
+            activeSkill.JumpDefaultsVersion = JumpDefaultsCurrentVersion;
+
+            if ((JumpSkillDefaults.TryGetValue(NormalizeSkillName(skill.Name), out var entry) ||
+                 JumpSkillDefaults.TryGetValue(NormalizeSkillName(skill.InternalName), out entry)) &&
+                entry.since > seededVersion)
+            {
+                activeSkill.MaxJumpDistance.Value = entry.range;
             }
         }
 

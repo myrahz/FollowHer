@@ -43,9 +43,14 @@ namespace FollowHer.Core.Combat.Skills
         [Menu("Max Jump Distance", "How far this skill carries you in one use, in world units, measured from where you stand. Pathfinding uses it to look for jumps over gaps and low obstacles (Leap Slam, Flame Dash, Frostblink...). 0 = never plan jumps with this skill. The real range depends on your gems and gear, so set it to what you actually see in game: too low and shortcuts are missed, too high and the character falls short of the landing and gives up on that jump after a few seconds.")]
         public RangeNode<int> MaxJumpDistance { get; set; } = new(0, 0, 2000);
 
-        // Whether the per-skill jump defaults have been seeded. Without it a skill saved before the
-        // jump settings existed would stay at 0 forever, and a user who deliberately set 0 would have
-        // it overwritten - this tells the two apart.
+        // Which generation of per-skill jump defaults has been seeded into this skill. Without it a
+        // skill saved before the jump settings existed would stay at 0 forever, and a user who
+        // deliberately set 0 would have it overwritten - this tells the two apart. It is a version
+        // rather than a flag so skills added to the defaults later (Blink Arrow, Lightning Warp) can
+        // still be seeded on a skill that was saved under the earlier set.
+        public int JumpDefaultsVersion { get; set; }
+
+        // Superseded by JumpDefaultsVersion; still read so settings saved with it migrate as version 1.
         public bool JumpDefaultsApplied { get; set; }
 
         [Menu("Requires Aiming", "Whether this skill needs the cursor placed on the target before casting - uncheck for buffs/supports/cries that fire immediately without targeting")]
