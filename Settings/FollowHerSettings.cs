@@ -107,6 +107,9 @@ public class MovementSettings
     [Menu("Max Waypoint Distance", "How far apart path waypoints may be placed (world units) where the way ahead is clear. Corners and turns keep tight waypoints on their own - the line of sight breaks there - so raising this only stretches the straight sections, which is what gives a movement skill a hop long enough to be worth using. Note it can't produce a movement target closer than Keep Within Distance x 1.5, since waypoints inside that are treated as already reached.")]
     public RangeNode<int> MaxWaypointDistance { get; set; } = new(400, 50, 2000);
 
+    [Menu("Wall Clearance", "How many grid cells the path tries to stay away from walls and obstacles (about 11 world units each). Routes that hug walls leave movement skills no room - ground dashes need a clear corridor. This is a soft preference: a narrower gap is still used when it's the only way through. 0 = plain shortest path.")]
+    public RangeNode<int> WallClearance { get; set; } = new(3, 0, 8);
+
     [Menu("Input Frequency (ms)", "Minimum delay between successive movement inputs")]
     public RangeNode<int> InputFrequency { get; set; } = new(50, 1, 100);
 

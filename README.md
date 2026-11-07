@@ -245,6 +245,7 @@ See [Runtime controls](#runtime-controls-hotkeys--overlay). Precision Key / Prec
 | **Movement Skill Min Distance** | 100 | Don't use a movement skill for a hop shorter than this. |
 | **Movement Skill Max Distance** | 1000 | Don't use a movement skill for a hop longer than this. |
 | **Max Waypoint Distance** | 400 | How far apart path waypoints may be placed (world units) where the way ahead is clear. Corners keep tight waypoints on their own; this only stretches the straight sections. See [Movement skills](#movement-skills). |
+| **Wall Clearance** | 3 | Grid cells (~11 world units each) the path tries to keep off walls. Shortest-path routes hug walls, which leaves ground dashes no clear corridor; this makes A* pay extra for cells near walls and stops waypoint smoothing from cutting corners. Soft preference - a narrower gap is still used if it's the only way. `0` = plain shortest path. |
 | **Input Frequency (ms)** | 50 | Minimum delay between successive movement inputs. |
 | **Enable Pathfinding Fallback** | on | Use A* pathfinding around obstacles. Off = always walk straight at the target. |
 | **Movement Skills** | — | Auto-discovered movement skills with per-skill options. |

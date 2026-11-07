@@ -23,6 +23,16 @@ public static class GridPathfinder
     [ThreadStatic] private static int _generation;
     [ThreadStatic] private static PriorityQueue<int, (int f, int h)> _open;
 
+    // Wall-proximity cost per cell, computed the first time a search touches the cell and stamped with
+    // the generation like the rest (so it's recomputed per search - the grid may have changed).
+    [ThreadStatic] private static int[] _penaltyStamp;
+    [ThreadStatic] private static int[] _penalty;
+
+    // Extra cost (on the 10-per-straight-step scale) per cell of encroachment into the clearance
+    // radius. A cell touching a wall with a 3-cell radius costs 10 + 3*8 = 34, so the route will take a
+    // detour of a few cells to stay off the wall, but a narrow gap is still passable.
+    private const int ClearancePenaltyPerStep = 8;
+
     private static void EnsureBuffers(int cellCount)
     {
         if (_gScore != null && _gScore.Length >= cellCount)
@@ -35,7 +45,29 @@ public static class GridPathfinder
         _parent = new int[cellCount];
         _seenStamp = new int[cellCount];
         _closedStamp = new int[cellCount];
+        _penaltyStamp = new int[cellCount];
+        _penalty = new int[cellCount];
         _generation = 1;
+    }
+
+    /// <summary>How much a cell should cost for being near a blocked cell: 0 when nothing blocked lies
+    /// within <paramref name="radius"/> cells, rising the closer the nearest blocked cell is. Rings are
+    /// scanned outward so a cell hard against a wall exits after the first one.</summary>
+    private static int ClearancePenalty(int[][] grid, int x, int y, int radius)
+    {
+        for (var r = 1; r <= radius; r++)
+        {
+            for (var dy = -r; dy <= r; dy++)
+            {
+                for (var dx = -r; dx <= r; dx++)
+                {
+                    if (Math.Abs(dx) != r && Math.Abs(dy) != r) continue;
+                    if (!IsWalkable(grid, x + dx, y + dy)) return (radius - r + 1) * ClearancePenaltyPerStep;
+                }
+            }
+        }
+
+        return 0;
     }
 
     // 8-directional neighbors
@@ -95,8 +127,11 @@ public static class GridPathfinder
     /// yes/no reachability question (dash shortcut, leader-jump check) deliberately don't opt in - a
     /// truncated route would answer "reachable" when nothing of the sort was established.
     /// </summary>
+    /// <param name="wallClearanceCells">Soft preference for staying this many cells off walls: cells
+    /// within it cost extra, scaled by how close they are. 0 = plain shortest path. It never forbids a
+    /// cell, so a gap narrower than the margin is still taken when it's the only way.</param>
     public static List<(int x, int y)> AStar(int[][] grid, (int x, int y) start, (int x, int y) target,
-        int maxNodesToExplore, bool allowPartialPath, out bool isPartial)
+        int maxNodesToExplore, bool allowPartialPath, out bool isPartial, int wallClearanceCells = 0)
     {
         isPartial = false;
         if (grid == null) return null;
@@ -175,7 +210,19 @@ public static class GridPathfinder
                 var neighborIndex = ny * width + nx;
                 if (_closedStamp[neighborIndex] == generation) continue;
 
-                var tentativeG = currentG + n.cost;
+                var stepCost = n.cost;
+                if (wallClearanceCells > 0)
+                {
+                    if (_penaltyStamp[neighborIndex] != generation)
+                    {
+                        _penaltyStamp[neighborIndex] = generation;
+                        _penalty[neighborIndex] = ClearancePenalty(grid, nx, ny, wallClearanceCells);
+                    }
+
+                    stepCost += _penalty[neighborIndex];
+                }
+
+                var tentativeG = currentG + stepCost;
                 if (_seenStamp[neighborIndex] == generation && tentativeG >= _gScore[neighborIndex]) continue;
 
                 _seenStamp[neighborIndex] = generation;

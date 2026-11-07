@@ -171,7 +171,8 @@ public class PathFollower
                 }
 
                 var rawPath = GridPathfinder.AStar(grid, start, target, MaxPathSearchNodes,
-                    allowPartialPath: true, out var isPartial);
+                    allowPartialPath: true, out var isPartial,
+                    FollowHer.Instance.Settings.Movement.WallClearance.Value);
 
                 _currentPath = rawPath is { Count: > 0 } ? SmoothPath(rawPath) : null;
                 _currentPathIsPartial = _currentPath != null && isPartial;
@@ -317,6 +318,13 @@ public class PathFollower
         var maxWaypointWorld = FollowHer.Instance.Settings.Movement.MaxWaypointDistance.Value;
         var maxLookaheadCells = Math.Max(1, (int)Math.Round(maxWaypointWorld / GridToWorldMultiplier));
 
+        // A* already steers off walls, but smoothing would undo it: a straight shortcut between two
+        // well-placed cells can still graze a corner. So a shortcut must also have a clear corridor
+        // either side (the same check ground dashes use), leaving the tight raw cells at corners.
+        var clearance = FollowHer.Instance.Settings.Movement.WallClearance.Value;
+        var corridorMargin = clearance > 1 ? clearance - 1 : 0;
+        var walkableGrid = corridorMargin > 0 ? _lineOfSight.GetGridReference(LineOfSightDataType.Walkable) : null;
+
         var smoothed = new List<(int x, int y)>();
         var i = 0;
 
@@ -338,7 +346,8 @@ public class PathFollower
                 {
                     var from = new Vector2(rawPath[i].x, rawPath[i].y);
                     var to = new Vector2(rawPath[j].x, rawPath[j].y);
-                    if (_lineOfSight.HasLineOfSight(from, to, LineOfSightDataType.Walkable))
+                    if (_lineOfSight.HasLineOfSight(from, to, LineOfSightDataType.Walkable) &&
+                        (walkableGrid == null || GridPathfinder.HasCorridorClearance(walkableGrid, from, to, corridorMargin)))
                     {
                         best = j;
                         break;
