@@ -186,7 +186,7 @@ public class NavigationSettings
     [Menu("Navigation Timeout (s)", "Give up on a destination after this long. 0 = never give up.")]
     public RangeNode<int> Timeout { get; set; } = new(180, 0, 900);
 
-    [Menu("Radar targets.json Path", "Leave blank to auto-detect it under Plugins/Source/Radar (or Plugins/Compiled/Radar). Set it only if your Radar install lives somewhere else.")]
+    [Menu("Radar targets.json Path", "Leave blank to auto-detect it under Plugins/Temp/Radar, then Plugins/Compiled/Radar, then Plugins/Source/Radar. Set it only if your Radar install lives somewhere else.")]
     public TextNode RadarTargetsPath { get; set; } = new("");
 }
 

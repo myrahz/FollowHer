@@ -297,7 +297,8 @@ public class RadarTargetSource
 
     /// <summary>Locates Radar's targets.json. Probed relative to the host's directory rather than
     /// asked of Radar, since the bridge exposes no such method - covers both a source install
-    /// (Plugins/Source/Radar) and a compiled one (Plugins/Compiled/Radar), and an explicit override
+    /// (Plugins/Temp/Radar, where the HUD builds it), a compiled one (Plugins/Compiled/Radar) and the
+    /// raw source folder (Plugins/Source/Radar), tried in that order. An explicit override
     /// in the settings wins over both.</summary>
     private static string FindRadarTargetsFile()
     {
@@ -308,10 +309,14 @@ public class RadarTargetSource
         }
 
         var root = AppDomain.CurrentDomain.BaseDirectory;
+        // Temp first: that's the copy of Radar the HUD is actually running (it builds source plugins
+        // there), so it's the one whose targets.json matches what Radar draws. Then a compiled
+        // install, then the raw source folder.
         string[] candidates =
         {
-            Path.Combine(root, "Plugins", "Source", "Radar", "targets.json"),
+            Path.Combine(root, "Plugins", "Temp", "Radar", "targets.json"),
             Path.Combine(root, "Plugins", "Compiled", "Radar", "targets.json"),
+            Path.Combine(root, "Plugins", "Source", "Radar", "targets.json"),
         };
 
         return candidates.FirstOrDefault(File.Exists);

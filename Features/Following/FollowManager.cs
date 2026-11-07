@@ -95,12 +95,12 @@ public class FollowManager
         _skillHandler = skillHandler;
         _skillMonitor = skillMonitor;
         _lineOfSight = new LineOfSight(gameController);
-        _pathFollower = new PathFollower(gameController, _lineOfSight, LongestUsableJumpWorld);
+        _pathFollower = new PathFollower(gameController, _lineOfSight, PathingMode.Chase, LongestUsableJumpWorld);
 
         // Its own PathFollower, so switching between following and manual navigation never inherits
         // the other's cached route.
         Navigation = new NavigationManager(gameController, this,
-            new PathFollower(gameController, _lineOfSight, LongestUsableJumpWorld));
+            new PathFollower(gameController, _lineOfSight, PathingMode.Fixed, LongestUsableJumpWorld));
         FollowHer.Instance.Navigation = Navigation;
 
         EventBus.Instance.Subscribe<RenderEvent>(HandleRender);
@@ -221,7 +221,7 @@ public class FollowManager
                         // ...and only if we also can't actually path to where they now read. If a
                         // walkable route to the far position exists, they're reachable - just follow
                         // it. So this fires only when the leader is far AND jumped AND unreachable.
-                        if (jumpWorld > jumpThreshold && !HasWalkablePath(RoundGrid(player.GridPosNum), newGrid))
+                        if (jumpWorld > jumpThreshold && !HasWalkablePath(_pathFollower.StandingCell(), newGrid))
                         {
                             LogDebug($"Leader position jumped {jumpWorld:F0} (> {jumpThreshold}), now {currentDistanceToLeader:F0} away and unreachable - treating as a transition at their previous position");
                             // Keep _lastKnownLeaderGrid at the pre-jump spot (don't adopt the far
@@ -380,7 +380,7 @@ public class FollowManager
     internal bool HasWalkablePathTo(Vector2 targetGridPos)
     {
         if (_gameController.Player == null) return false;
-        return HasWalkablePath(RoundGrid(_gameController.Player.GridPosNum), RoundGrid(targetGridPos));
+        return HasWalkablePath(_pathFollower.StandingCell(), RoundGrid(targetGridPos));
     }
 
     private bool TryFollowPathToTarget(Entity player, (int x, int y) target, MovementSettings settings, bool leaderVisible)
@@ -996,7 +996,7 @@ public class FollowManager
         var grid = _lineOfSight.GetGridReference(LineOfSightDataType.Walkable);
         if (grid == null) return null;
 
-        var start = RoundGrid(player.GridPosNum);
+        var start = _pathFollower.StandingCell();
         var target = RoundGrid(leaderEntity.GridPosNum);
 
         var directGrid = Vector2.Distance(new Vector2(start.x, start.y), new Vector2(target.x, target.y));

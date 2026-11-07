@@ -7,6 +7,19 @@ using FollowHer.Utils;
 
 namespace FollowHer.Features.Following.Pathfinding;
 
+/// <summary>What a <see cref="PathFollower"/> is walking to, which decides how it searches and when it
+/// replans.</summary>
+public enum PathingMode
+{
+    /// <summary>A moving target (the leader), normally nearby. Cheap budgeted search, replanned as the
+    /// target drifts.</summary>
+    Chase,
+
+    /// <summary>A destination that never moves (the target navigator). One whole-zone search, a cached
+    /// complete route, replanned only when the character leaves it.</summary>
+    Fixed,
+}
+
 public enum PathStepKind
 {
     /// <summary>Walk to the returned waypoint - the next node on the computed path.</summary>
@@ -76,6 +89,15 @@ public readonly struct PathStep
 /// with the returned step (FollowManager.ExecuteMovement owns movement-skill selection).</summary>
 public class PathFollower
 {
+    // Fixed routes are walked straight along, so the only reason to replan is having left the route.
+    // Waypoints are at most Max Waypoint Distance apart, so being further than this from the one
+    // we're heading to means we were moved (knockback, a jump that fell short, a teleport).
+    private const float FixedOffRouteSlackWorld = 400f;
+
+    // A Fixed search that finds nothing is the whole zone's answer, and costs a few hundred ms to
+    // reach, so retrying is much slower than the 400ms used for the cheap follow search.
+    private const int FixedNoPathRetryMs = 1000;
+
     /// <summary>A* node budget per computation. This is a *time* limit, not a range limit: the search
     /// runs on the game thread, so it can't flood a whole zone the way Radar's background scan does.
     /// Reach beyond it is covered by best-effort partial paths plus recomputing every
@@ -83,6 +105,15 @@ public class PathFollower
     /// Public because callers that run their own one-off search (e.g. the dash-shortcut detour
     /// measurement) must use the same budget as normal path computation.</summary>
     public const int MaxPathSearchNodes = 40000;
+
+    /// <summary>Budget for the whole-zone search that replaces a partial route (see GetNextStep).
+    /// Effectively "every walkable cell": the search stops when the open set empties long before this.</summary>
+    public const int MaxFullSearchNodes = 1_500_000;
+
+    // The whole-zone search is expensive enough to hitch a frame, so it can't run on every recompute
+    // while chasing a far-off moving target.
+    private const int MinFullSearchIntervalMs = 5000;
+    private DateTime _nextFullSearchAt = DateTime.MinValue;
 
     private const float PathRetargetThresholdGrid = 20f;
     private const int MinPathRecomputeIntervalMs = 400;
@@ -123,10 +154,14 @@ public class PathFollower
     // by something the grids don't show) - ban that landing and plan around it.
     private const int JumpGiveUpMs = 2500;
 
-    public PathFollower(GameController gameController, LineOfSight lineOfSight, Func<float> jumpRangeProvider = null)
+    private readonly PathingMode _mode;
+
+    public PathFollower(GameController gameController, LineOfSight lineOfSight, PathingMode mode,
+        Func<float> jumpRangeProvider = null)
     {
         _gameController = gameController;
         _lineOfSight = lineOfSight;
+        _mode = mode;
         _jumpRangeProvider = jumpRangeProvider;
     }
 
@@ -146,6 +181,26 @@ public class PathFollower
     public static (int x, int y) RoundGrid(Vector2 gridPos)
     {
         return ((int)Math.Round(gridPos.X), (int)Math.Round(gridPos.Y));
+    }
+
+    /// <summary>The grid cell the player is standing on, as a cell A* can start from. Plain rounding
+    /// isn't enough: right on the edge of an obstacle the rounded cell can be the blocked one next to
+    /// the cell actually underfoot (line of sight truncates instead of rounding, so the two disagree
+    /// there), and A* refuses to start from a blocked cell - which reads as "no path" and sends
+    /// following walking straight into the obstacle. So if the rounded cell is blocked, use the
+    /// truncated one, then the nearest walkable cell.</summary>
+    public (int x, int y) StandingCell()
+    {
+        var position = _gameController.Player.GridPosNum;
+        var rounded = RoundGrid(position);
+
+        var grid = _lineOfSight.GetGridReference(LineOfSightDataType.Walkable);
+        if (grid == null || GridPathfinder.IsCellWalkable(grid, rounded.x, rounded.y)) return rounded;
+
+        var truncated = ((int)position.X, (int)position.Y);
+        if (GridPathfinder.IsCellWalkable(grid, truncated.Item1, truncated.Item2)) return truncated;
+
+        return SnapToWalkable(rounded, 3) ?? rounded;
     }
 
     public Vector3 GridToWorld(int x, int y)
@@ -174,7 +229,7 @@ public class PathFollower
         var player = _gameController.Player;
         if (player == null) return PathStep.NoPath(false);
 
-        var start = RoundGrid(player.GridPosNum);
+        var start = StandingCell();
         if (start == target) return PathStep.Arrived();
 
         var targetWorld = GridToWorld(target.x, target.y);
@@ -225,10 +280,37 @@ public class PathFollower
                     }
                 }
 
-                var rawPath = GridPathfinder.AStar(grid, start, target, MaxPathSearchNodes,
-                    allowPartialPath: true, out var isPartial,
-                    FollowHer.Instance.Settings.Movement.WallClearance.Value,
-                    jumpOptions, _jumpLandings);
+                var wallClearance = FollowHer.Instance.Settings.Movement.WallClearance.Value;
+                List<(int x, int y)> rawPath;
+                bool isPartial;
+
+                if (_mode == PathingMode.Fixed)
+                {
+                    // A destination that never moves is worth solving properly, once: search the whole
+                    // zone, cache the complete route, and walk it. Nothing about the target changes, so
+                    // it only gets replanned when we leave the route (see NeedsPathRecompute). A null
+                    // here is authoritative - the target really is cut off.
+                    rawPath = GridPathfinder.AStar(grid, start, target, MaxFullSearchNodes,
+                        allowPartialPath: true, out isPartial, wallClearance, jumpOptions, _jumpLandings);
+                }
+                else
+                {
+                    rawPath = GridPathfinder.AStar(grid, start, target, MaxPathSearchNodes,
+                        allowPartialPath: true, out isPartial, wallClearance, jumpOptions, _jumpLandings);
+
+                    // A leader is normally close, so the cheap search is enough - and it has to be cheap,
+                    // because it reruns as they move. But a partial route is only "the explored cell
+                    // nearest the target in a straight line", which in a winding level is routinely a
+                    // dead end (walls between you and a leader a few dozen cells away that you can only
+                    // reach by a long way round). Rather than walk into it, pay for a whole-zone search -
+                    // rate-limited, since it can hitch a frame and the target keeps moving.
+                    if (isPartial && DateTime.Now >= _nextFullSearchAt)
+                    {
+                        _nextFullSearchAt = DateTime.Now.AddMilliseconds(MinFullSearchIntervalMs);
+                        rawPath = GridPathfinder.AStar(grid, start, target, MaxFullSearchNodes,
+                            allowPartialPath: true, out isPartial, wallClearance, jumpOptions, _jumpLandings);
+                    }
+                }
 
                 _jumpRangeAtPlan = jumpOptions != null ? jumpRange : 0f;
                 _jumpFirstAttemptAt = null;
@@ -236,7 +318,8 @@ public class PathFollower
                 _currentPathIsPartial = _currentPath != null && isPartial;
                 _currentPathIndex = 0;
                 _currentPathTarget = target;
-                _nextPathRecomputeAt = DateTime.Now.AddMilliseconds(MinPathRecomputeIntervalMs);
+                _nextPathRecomputeAt = DateTime.Now.AddMilliseconds(
+                    _mode == PathingMode.Fixed && _currentPath == null ? FixedNoPathRetryMs : MinPathRecomputeIntervalMs);
                 justComputed = true;
             }
 
@@ -386,9 +469,46 @@ public class PathFollower
         _bannedLandings.Clear();
         _jumpRangeAtPlan = 0f;
         _jumpFirstAttemptAt = null;
+        _nextFullSearchAt = DateTime.MinValue;
     }
 
     private bool NeedsPathRecompute((int x, int y) target)
+    {
+        return _mode == PathingMode.Fixed ? NeedsFixedRecompute(target) : NeedsChaseRecompute(target);
+    }
+
+    /// <summary>A fixed destination never moves, so a complete cached route stays valid until the
+    /// character leaves it - there is no drift to chase and no reason to re-search a whole zone on a
+    /// timer.</summary>
+    private bool NeedsFixedRecompute((int x, int y) target)
+    {
+        if (_currentPathTarget == null || _currentPathTarget.Value != target) return true;
+
+        // Nothing found: the search was whole-zone, so retrying only matters if the terrain was still
+        // loading. Slowly, then, since each try is expensive.
+        if (_currentPath == null) return DateTime.Now >= _nextPathRecomputeAt;
+
+        // Walked off the end. Complete route = arrived (the caller reports it); partial = the search
+        // budget ran out before the target, so go again from here.
+        if (_currentPathIndex >= _currentPath.Count) return _currentPathIsPartial;
+
+        // A skill came off cooldown since planning without one, so a jump shortcut may exist now.
+        if (_jumpRangeAtPlan <= 0f && DateTime.Now >= _nextPathRecomputeAt && CurrentJumpRange() > 0f) return true;
+
+        // Off the route: knocked back, teleported, or a jump that fell short. Not checked while the
+        // next node is a jump landing - the takeoff is legitimately a whole jump away from it.
+        var node = _currentPath[_currentPathIndex];
+        if (!_jumpLandings.Contains(node) && DateTime.Now >= _nextPathRecomputeAt)
+        {
+            var maxWaypointWorld = FollowHer.Instance.Settings.Movement.MaxWaypointDistance.Value;
+            var distance = Vector3.Distance(_gameController.Player.PosNum, GridToWorld(node.x, node.y));
+            if (distance > maxWaypointWorld + FixedOffRouteSlackWorld) return true;
+        }
+
+        return false;
+    }
+
+    private bool NeedsChaseRecompute((int x, int y) target)
     {
         if (_currentPathTarget == null) return true;
         if (_currentPath == null) return DateTime.Now >= _nextPathRecomputeAt;

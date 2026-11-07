@@ -102,6 +102,8 @@ It runs on the *same* pathfinding the follow logic uses (A* over the walkable gr
 3. It stops on arrival, on **Stop**, if no walkable path exists, on timeout, or when you change area.
 4. Bind **Stop Navigation Key** / **Resume Navigation Key** to interrupt and pick the same target back up without opening the window — handy for taking manual control through a fight, then carrying on. The buttons show their bound key, and the header shows which target Resume would take.
 
+Following and navigating share the pathfinder but use it differently. **Following** chases a moving leader who is normally close: a cheap, budgeted search that reruns as they move. **Navigating** walks to a point that never moves: one whole-zone search up front (expect a brief hitch on Go for a far target), the complete route cached, and a replan only if you get knocked or teleported off it. That's what makes a long, winding route work — a budgeted search ends in whichever dead end happens to be nearest the target in a straight line.
+
 The stopped target is remembered until you change area (grid coordinates only mean anything within the area they came from). **Resume** replans from wherever you're standing rather than continuing the old route.
 
 The status line reports what it's doing — distance left, waypoints remaining, `final approach`, `no walkable path`, `gave up - timed out`. With **Movement > Visual > Show Follow Path** on you also get the usual line to the current waypoint.
@@ -287,7 +289,7 @@ Settings for the [target navigator](#target-navigator-walk-to-a-radar-target).
 | **Resume Navigation Key** | none | Walks to the last picked target again, replanning from where you're standing. |
 | **Arrival Distance** | 60 | Stop this close (world units) to the chosen target — targets sit on a tile cluster's center, which you often can't stand exactly on. |
 | **Navigation Timeout (s)** | 180 | Give up on a destination after this long. `0` = never give up. |
-| **Radar targets.json Path** | blank | Blank auto-detects it under `Plugins/Source/Radar` (or `Plugins/Compiled/Radar`). Set it only if your Radar install lives elsewhere. |
+| **Radar targets.json Path** | blank | Blank auto-detects it under `Plugins/Temp/Radar`, then `Plugins/Compiled/Radar`, then `Plugins/Source/Radar`. Set it only if your Radar install lives elsewhere. |
 
 ### Combat
 
@@ -443,7 +445,7 @@ Add that skill to the **Leader Skill Blacklist** (Combat settings). Movement ski
 Raise **Movement > Transition Search Radius**. Turn on **Movement > Debug > Show Detailed Debug** to see the transition-follow decisions.
 
 **The navigator says a target is "cut off" that Radar draws a line to.**
-Distance alone no longer causes this — a search that exhausts its node budget now returns a best-effort route and extends it as you walk, so only a genuinely disconnected target reports it. Two things can still legitimately differ from Radar: it optionally paths through **triggerable blockades** (its *Clear Triggerable Blockades* option, on by default, opens doors and blockades before pathing) whereas FollowHer reads the raw walkable grid, and its route ignores whether *you* can open what's in the way.
+Distance alone no longer causes this. If the quick search runs out of budget, FollowHer runs a whole-zone search instead (a brief hitch, at most once every 5 s) rather than walking toward "the closest explored cell" — in a winding level that is often a dead end. Only a genuinely disconnected target reports it. Two things can still legitimately differ from Radar: it optionally paths through **triggerable blockades** (its *Clear Triggerable Blockades* option, on by default, opens doors and blockades before pathing) whereas FollowHer reads the raw walkable grid, and its route ignores whether *you* can open what's in the way.
 
 **The target navigator lists nothing.**
 The status line next to **Refresh** says why: Radar not loaded (it must be installed **and enabled** — it's what supplies the positions), `targets.json` not found (set **Navigation > Radar targets.json Path**), or Radar defines no targets for this area. Right after a zone load it can take a moment before Radar has processed the area; the window retries on its own, or press **Refresh**.

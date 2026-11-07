@@ -16,11 +16,11 @@ namespace FollowHer.Features.Navigation;
 /// so it stays in control until it arrives, fails, or is stopped.</summary>
 public class NavigationManager
 {
-    // A* failing once is usually transient (the target cell is momentarily blocked, terrain data is
-    // mid-refresh). Failing this many computations in a row means it's genuinely unreachable - report
-    // that instead of quietly retrying until the timeout. Path computation is throttled to one every
-    // 400ms, so this is roughly five seconds of trying.
-    private const int MaxConsecutiveNoPath = 12;
+    // A* failing once can be transient (terrain data mid-refresh), but navigation searches the whole
+    // zone, so a failure is a real answer and each retry is expensive. Failing this many computations
+    // in a row means it's genuinely unreachable - report that instead of retrying until the timeout.
+    // Retries are one second apart, so this is a few seconds of trying.
+    private const int MaxConsecutiveNoPath = 4;
 
     private readonly GameController _gameController;
     private readonly FollowManager _followManager;
