@@ -70,8 +70,10 @@ The plugin runs in exactly one of two **modes**, chosen by the **Mode** setting.
 | Starts moving | **Movement Toggle Key** | **Move Key** — *Toggle* (press to start, press to stop) or *Hold* (walks while held) |
 | Fights | when the leader fights (**Attack When Leader Is Attacking**), gated by **Fighting Toggle Key**; Precision overrides | **only while the Precision key is held** (or Precision Toggle is on); otherwise it moves |
 | Pathing | chases a moving target: cheap budgeted search, replanned as the leader moves | walks to a fixed point: one whole-zone search, route cached |
-| Extras | zone-transition following, party-invite accept, quest object/item tasks | the Radar target window, Stop/Resume keys |
-| Shared | combat rule profiles, targeting, movement skills and jump planning, gem auto-level, resurrect, overlays | |
+| Style | **AFK** — runs unattended | **Assisted** — you're at the keyboard |
+| Unattended clicking | auto-resurrect at the checkpoint, auto-accept the leader's party invite, auto level-up gems | **none** — it never clicks resurrect, invites or gem buttons for you |
+| Extras | zone-transition following, quest object/item tasks | the Radar target window, Stop/Resume keys |
+| Shared | combat rule profiles, targeting, movement skills and jump planning, overlays | |
 
 In Navigator mode the leader settings, the Movement and Fighting Toggle Keys and the leader attack gate do nothing. Fighting and moving take turns: with the fight key held and an enemy in range the character stops and fights; when the key is released, or nothing is left to hit, it carries on walking.
 
@@ -131,9 +133,9 @@ The stopped target is remembered until you change area (grid coordinates only me
 
 The status line reports what it's doing — distance left, waypoints remaining, `final approach`, `no walkable path`, `gave up - timed out`. With **Movement > Visual > Show Follow Path** on you also get the usual line to the current waypoint.
 
-**Where the targets come from.** They're Radar's own, not a second list to maintain: the target *names* are read from Radar's `targets.json` (the current area's block plus the global `*` block) and the *positions* come from Radar itself over the plugin bridge (`Radar.ClusterTarget`), so they're the exact cells Radar draws on its map — its clustering, snapped to walkable tiles by its own code.
+**Where the targets come from.** They're Radar's own, not a second list to maintain. FollowHer reads the list Radar has already worked out for the current area — the same one it draws and routes to — so you see exactly Radar's targets: room-scoped ones (boss doors, league mechanics, ...), alternatives, adjacent-tile merging, and entity targets as they load, all as Radar resolved them. The list refreshes about once a second while the window is open, because Radar fills it in shortly after a zone load. Targets that share a name (e.g. two "boss" entries) are numbered `#1`, `#2`.
 
-That means **Radar must be installed and enabled** for the list to populate; without it the window says so instead of listing anything. Two Radar features the bridge signature can't carry: a target's `Rooms` filter is ignored, and room-scoped entries (those with `Name: "*"`) are skipped since there's no tile pattern to resolve. Coverage is whatever Radar defines — the campaign is well covered (most acts define the transitions of every zone); a map with no entry of its own only shows the global targets.
+**Radar must be installed and enabled** for the list to populate; the status line under **Refresh** says what it found. If Radar's list can't be read (a Radar build that doesn't keep it), FollowHer falls back to the older route — names from Radar's `targets.json` (the current area's block plus the global `*` block) with positions from Radar over the plugin bridge (`Radar.ClusterTarget`). That route can't carry Radar's `Rooms` filter, so **room-scoped targets are missing** in it, and the status line says so. Coverage is whatever Radar defines — the campaign is well covered (most acts define the transitions of every zone); a map with no entry of its own only shows the global targets.
 
 ---
 
@@ -248,7 +250,7 @@ See [Runtime controls](#runtime-controls-hotkeys--overlay). Precision Key / Prec
 
 | Setting | Default | Description |
 |---|---|---|
-| **Auto Accept Leader Party Invite** | off | Auto-accepts a **party** invite only when the inviter's name matches **Leader Name**. Party invites from anyone else, and all trade/friend/guild invites, are ignored. |
+| **Auto Accept Leader Party Invite** | off | Follow mode only. Auto-accepts a **party** invite only when the inviter's name matches **Leader Name**. Party invites from anyone else, and all trade/friend/guild invites, are ignored. |
 | **Accept Delay (ms)** | 500 | Wait this long after the leader's invite first appears before clicking Accept. |
 
 ### Movement
@@ -474,7 +476,7 @@ Raise **Movement > Transition Search Radius**. Turn on **Movement > Debug > Show
 Distance alone no longer causes this. If the quick search runs out of budget, FollowHer runs a whole-zone search instead (a brief hitch, at most once every 5 s) rather than walking toward "the closest explored cell" — in a winding level that is often a dead end. Only a genuinely disconnected target reports it. Two things can still legitimately differ from Radar: it optionally paths through **triggerable blockades** (its *Clear Triggerable Blockades* option, on by default, opens doors and blockades before pathing) whereas FollowHer reads the raw walkable grid, and its route ignores whether *you* can open what's in the way.
 
 **The target navigator lists nothing.**
-The status line next to **Refresh** says why: Radar not loaded (it must be installed **and enabled** — it's what supplies the positions), `targets.json` not found (set **Navigation > Radar targets.json Path**), or Radar defines no targets for this area. Right after a zone load it can take a moment before Radar has processed the area; the window retries on its own, or press **Refresh**.
+The status line next to **Refresh** says why: Radar not loaded or disabled (it must be installed **and enabled** — it's what supplies the list), or Radar has no targets for this area. If it reports a fallback, `targets.json` wasn't found (set **Navigation > Radar targets.json Path**) and room-scoped targets are unavailable. Right after a zone load it can take a moment before Radar has processed the area; the window retries on its own, or press **Refresh**.
 
 **A specific movement skill isn't recognized.**
 Skills are read off the skill bar on area load. Skill-name matching is case/space-insensitive and checks both display and internal names; if one still isn't picked up, note its internal name and it can be added.

@@ -168,12 +168,18 @@ namespace FollowHer
 
             try
             {
-                // Runs before the alive check - being dead is no reason to sit on a pending invite.
-                TryAcceptLeaderInvite();
-                TryLevelUpGems();
-
                 var mode = Settings.CurrentMode;
                 if (mode != _appliedMode) ApplyModeChange(mode);
+
+                // Unattended automation belongs to Follow mode, which is the AFK one. Navigator mode is
+                // assisted - someone is at the keyboard - so the plugin never clicks the party invite,
+                // the gem level-up button or the resurrect button on their behalf there. Runs before the alive check: being dead
+                // is no reason to sit on a pending invite.
+                if (mode == PluginMode.Follow)
+                {
+                    TryAcceptLeaderInvite();
+                    TryLevelUpGems();
+                }
 
                 // Also before the alive check: dying mid-route is exactly when you want to call
                 // navigation off, and it would otherwise resume walking to the target the moment you
@@ -182,7 +188,9 @@ namespace FollowHer
 
                 if (GameController.Player?.IsAlive == false)
                 {
-                    TryResurrectAtCheckpoint();
+                    // Follow mode (AFK) gets back up on its own; in Navigator mode (assisted) the
+                    // resurrect choice - checkpoint or town - is left to the player.
+                    if (mode == PluginMode.Follow) TryResurrectAtCheckpoint();
                     return null;
                 }
 

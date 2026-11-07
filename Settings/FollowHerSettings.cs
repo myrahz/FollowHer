@@ -77,7 +77,7 @@ public class PartySettings
 [Submenu(CollapsedByDefault = true)]
 public class AutomationSettings
 {
-    [Menu("Auto Level Up Gems", "When the gem level-up panel appears, click its 'Level Up All Gems' button. Runs every tick regardless of the movement/fighting toggles.")]
+    [Menu("Auto Level Up Gems", "When the gem level-up panel appears, click its 'Level Up All Gems' button. Follow mode only (Navigator mode is assisted, so it never clicks for you). Runs every tick regardless of the movement/fighting toggles.")]
     public ToggleNode AutoLevelUpGems { get; set; } = new(false);
 }
 

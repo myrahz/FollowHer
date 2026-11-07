@@ -66,8 +66,17 @@ public class RadarTargetSource
 
         if (_hasScanned && _scannedAreaHash == areaHash)
         {
-            if (_targets.Count > 0 || _emptyRescans >= MaxEmptyRescans || DateTime.Now < _nextAutoScanAt) return;
-            _emptyRescans++;
+            if (_usingRadarLive)
+            {
+                // Radar's list changes under us (background build after a zone load, entity targets
+                // appearing), and reading it is cheap, so keep it fresh for as long as the window is up.
+                if (DateTime.Now < _nextLiveRefreshAt) return;
+            }
+            else
+            {
+                if (_targets.Count > 0 || _emptyRescans >= MaxEmptyRescans || DateTime.Now < _nextAutoScanAt) return;
+                _emptyRescans++;
+            }
         }
 
         ScanInternal(gameController);
@@ -90,6 +99,7 @@ public class RadarTargetSource
         _hasScanned = true;
         _scannedAreaHash = areaHash;
         _nextAutoScanAt = DateTime.Now.AddMilliseconds(EmptyRescanDelayMs);
+        _nextLiveRefreshAt = DateTime.Now.AddMilliseconds(LiveRefreshMs);
 
         try
         {
@@ -111,6 +121,101 @@ public class RadarTargetSource
         Status = "waiting for area data";
     }
 
+    // Radar keeps the targets it draws and routes to in this private field: a dictionary of
+    // TargetLocations { Locations, Target { Name, Rooms, DisplayName, ... } }, with its room filters,
+    // alternatives, adjacency merging and walkable snapping all already applied, and entity targets
+    // added as they load. Reading it is the only way to get *exactly* Radar's list - the plugin
+    // bridge's Radar.ClusterTarget takes no rooms, so room-scoped targets (boss doors, league
+    // mechanics, ...) can't come through it.
+    private const string RadarPluginName = "Radar";
+    private const string RadarClusteredField = "_clusteredTargetLocations";
+
+    // Radar fills the field in the background after a zone load and adds entity targets as they appear,
+    // so a live read is repeated rather than cached for the zone.
+    private const int LiveRefreshMs = 1000;
+    private DateTime _nextLiveRefreshAt = DateTime.MinValue;
+    private bool _usingRadarLive;
+
+    /// <summary>Reads Radar's own target list. Returns null when that isn't possible (Radar missing,
+    /// disabled, or a build without the field), so the caller falls back to the bridge.</summary>
+    private List<NavTarget> TryReadRadarLive(out string status)
+    {
+        status = null;
+
+        try
+        {
+            var wrapper = ExileCore.Core.Current?.pluginManager?.Plugins?.FirstOrDefault(
+                p => string.Equals(p.Name, RadarPluginName, StringComparison.OrdinalIgnoreCase));
+            if (wrapper == null) { status = "Radar plugin not loaded"; return null; }
+            if (!wrapper.IsEnable) { status = "Radar plugin is disabled"; return null; }
+
+            var plugin = wrapper.Plugin;
+            var field = plugin?.GetType().GetField(RadarClusteredField,
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic |
+                System.Reflection.BindingFlags.Public);
+            if (field?.GetValue(plugin) is not System.Collections.IDictionary dictionary)
+            {
+                status = $"this Radar build has no '{RadarClusteredField}'";
+                return null;
+            }
+
+            var rows = new List<(string display, string pattern, Vector2[] locations)>();
+            foreach (System.Collections.DictionaryEntry entry in dictionary)
+            {
+                var targetLocations = entry.Value;
+                if (targetLocations == null) continue;
+
+                var type = targetLocations.GetType();
+                var locations = type.GetProperty("Locations")?.GetValue(targetLocations) as Vector2[];
+                if (locations is not { Length: > 0 }) continue;
+
+                var target = type.GetProperty("Target")?.GetValue(targetLocations);
+                var targetType = target?.GetType();
+                var name = targetType?.GetProperty("Name")?.GetValue(target) as string ?? "";
+                var rooms = targetType?.GetProperty("Rooms")?.GetValue(target) as string[];
+                var display = type.GetProperty("DisplayName")?.GetValue(targetLocations) as string;
+
+                rows.Add((string.IsNullOrWhiteSpace(display) ? Leaf(name) : display,
+                    rooms is { Length: > 0 } ? $"{name}  [rooms: {string.Join(", ", rooms)}]" : name,
+                    locations));
+            }
+
+            return NumberDuplicates(rows);
+        }
+        catch (Exception ex)
+        {
+            status = $"couldn't read Radar's targets: {ex.Message}";
+            return null;
+        }
+    }
+
+    /// <summary>One NavTarget per location. Several locations or several entries sharing a label
+    /// (two "boss" entries, a target with two instances) get " #n" suffixes, ordered by position so the
+    /// numbering doesn't shuffle between reads - the window identifies the selected and active target
+    /// by label.</summary>
+    private static List<NavTarget> NumberDuplicates(List<(string display, string pattern, Vector2[] locations)> rows)
+    {
+        var flat = rows
+            .SelectMany(r => r.locations.Select(l => (r.display, r.pattern, location: l)))
+            .OrderBy(x => x.display, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.location.X)
+            .ThenBy(x => x.location.Y)
+            .ToList();
+
+        var results = new List<NavTarget>(flat.Count);
+        foreach (var group in flat.GroupBy(x => x.display, StringComparer.OrdinalIgnoreCase))
+        {
+            var items = group.ToList();
+            for (var i = 0; i < items.Count; i++)
+            {
+                var label = items.Count > 1 ? $"{items[i].display} #{i + 1}" : items[i].display;
+                results.Add(new NavTarget(label, items[i].pattern, items[i].location));
+            }
+        }
+
+        return results;
+    }
+
     private List<NavTarget> BuildTargets(GameController gameController)
     {
         var results = new List<NavTarget>();
@@ -124,6 +229,21 @@ public class RadarTargetSource
             Status = "not in an area yet";
             return results;
         }
+
+        // Preferred: Radar's own list - identical to what it draws, rooms included.
+        var live = TryReadRadarLive(out var liveStatus);
+        _usingRadarLive = live != null;
+        if (live != null)
+        {
+            Status = live.Count > 0
+                ? $"{live.Count} target(s) in '{areaName}' (Radar's own list)"
+                : $"Radar has no targets for '{areaName}' (yet) - it fills in a moment after a zone load";
+            return live;
+        }
+
+        // Fallback: names from targets.json + positions from the bridge. Rooms are not available this
+        // way, so room-scoped targets are missing - the status says so.
+        var fallbackNote = liveStatus == null ? "" : $" [fallback: {liveStatus}; room-scoped targets unavailable]";
 
         if (_clusterTarget == null)
         {
@@ -192,9 +312,9 @@ public class RadarTargetSource
             }
         }
 
-        Status = results.Count > 0
+        Status = (results.Count > 0
             ? $"{results.Count} target(s) in '{areaName}'"
-            : $"Radar resolved none of the {_entries.Count} target(s) defined for '{areaName}'";
+            : $"Radar resolved none of the {_entries.Count} target(s) defined for '{areaName}'") + fallbackNote;
 
         return results;
     }
