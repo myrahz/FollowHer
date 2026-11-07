@@ -14,7 +14,6 @@ namespace FollowHer.Core.Combat
 {
     public abstract class OrbWalkingRoutineBase : RoutineBase
     {
-        private const string MOVE_SKILL_NAME = "Move";
         private Vector2 _preTargetMousePosition;
         private bool _inCombat;
         private bool _combatAllowed = true;
@@ -138,13 +137,17 @@ namespace FollowHer.Core.Combat
             if (_inCombat) return;
             if (FollowManager.Update()) return;
 
-            // FollowManager owns every movement-skill decision (TryGetMovementSkill's LOS/corridor
-            // clearance checks, DashEnabled/PreferMovementSkillsForTravel gating) - this fallback
-            // only runs when there's nothing for it to do at all (Follow disabled, no leader
-            // configured), so it must never fire a directional movement skill blindly. It used to,
-            // which meant a movement skill could fire with no destination and none of that safety
-            // gating any time FollowManager had nothing to do.
-            SkillHandler.UseMovementSkill(MOVE_SKILL_NAME, true);
+            // FollowManager returning false means it has no destination at all this tick - follow is
+            // off, no leader is configured, the character isn't alive yet, or its update threw. There
+            // is nothing sensible to move *toward* in any of those cases, so release the movement key
+            // rather than press it.
+            //
+            // It used to hold Move here instead. With no destination the game moves the character at
+            // whatever the cursor happens to be over, and holding it kept them going: that is the
+            // "plugin presses the movement key on zone change" bug. A zone load hits this path for a
+            // frame or two (the player entity reads not-alive while it initialises), and holding Move
+            // across those frames walks the character off the entrance.
+            SkillHandler.ReleaseAllSkills();
         }
 
         public override void Stop()

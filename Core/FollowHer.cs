@@ -14,6 +14,7 @@ using FollowHer.Core.Combat.Rules;
 using FollowHer.Core.Events;
 using FollowHer.Core.Events.Events;
 using FollowHer.Features.Following;
+using FollowHer.Features.Navigation;
 using FollowHer.Features.Rendering;
 using FollowHer.Settings;
 using ImGuiNET;
@@ -26,6 +27,7 @@ namespace FollowHer
 
         private IRoutine _activeRoutine;
         private readonly CombatRuleEditor _combatRuleEditor = new();
+        private readonly TargetNavigatorWindow _targetNavigatorWindow = new();
         private bool _isToggled;
         private bool _movementToggled;
         private bool _fightingToggled;
@@ -34,6 +36,10 @@ namespace FollowHer
         private DateTime _leaderInviteFirstSeenAt = DateTime.MinValue;
         private DateTime _nextGemLevelClickAt = DateTime.MinValue;
         private DateTime _lastLeaderAttackDetectedAt = DateTime.MinValue;
+
+        /// <summary>Manual "walk to this Radar target" navigation, owned by FollowManager and
+        /// published here so the navigator window (drawn from Render) can reach it.</summary>
+        public NavigationManager Navigation { get; internal set; }
 
         public bool MovementEnabled { get; private set; }
         public bool FightingEnabled { get; private set; }
@@ -55,6 +61,16 @@ namespace FollowHer
                 Input.RegisterKey(Settings.Hotkeys.PrecisionToggleKey);
                 Input.RegisterKey(Settings.Hotkeys.MovementToggleKey);
                 Input.RegisterKey(Settings.Hotkeys.FightingToggleKey);
+                Input.RegisterKey(Settings.Navigation.ToggleWindowKey);
+                Input.RegisterKey(Settings.Navigation.StopKey);
+                Input.RegisterKey(Settings.Navigation.ResumeKey);
+
+                Settings.Navigation.ToggleWindowKey.OnValueChanged += () =>
+                    Input.RegisterKey(Settings.Navigation.ToggleWindowKey);
+                Settings.Navigation.StopKey.OnValueChanged += () =>
+                    Input.RegisterKey(Settings.Navigation.StopKey);
+                Settings.Navigation.ResumeKey.OnValueChanged += () =>
+                    Input.RegisterKey(Settings.Navigation.ResumeKey);
 
                 Settings.Hotkeys.PrecisionKey.OnValueChanged += () => Input.RegisterKey(Settings.Hotkeys.PrecisionKey);
                 Settings.Hotkeys.PrecisionToggleKey.OnValueChanged += () =>
@@ -113,6 +129,8 @@ namespace FollowHer
         {
             _isToggled = false;
             _fightingToggled = false;
+            // Radar's target list is per-area - drop the old one so the navigator rescans here.
+            _targetNavigatorWindow.Invalidate();
             // Movement's toggle state is intentionally left alone - following the leader through
             // a zone transition is the whole point, so it must survive the transition itself.
             EventBus.Instance.Publish(new AreaChangeEvent { NewArea = area });
@@ -127,6 +145,10 @@ namespace FollowHer
                 // Runs before the alive check - being dead is no reason to sit on a pending invite.
                 TryAcceptLeaderInvite();
                 TryLevelUpGems();
+
+                // Also before it: dying mid-route is exactly when you want to call navigation off,
+                // and it would otherwise resume walking to the target the moment you resurrected.
+                HandleNavigationHotkeys();
 
                 if (GameController.Player?.IsAlive == false)
                 {
@@ -145,6 +167,10 @@ namespace FollowHer
                 if (Settings.Hotkeys.FightingToggleKey.PressedOnce())
                 {
                     _fightingToggled = !_fightingToggled;
+                }
+                if (Settings.Navigation.ToggleWindowKey.PressedOnce())
+                {
+                    Settings.Navigation.ShowWindow.Value = !Settings.Navigation.ShowWindow.Value;
                 }
                 // Fighting is a master switch (this hotkey) AND-ed with the combat conditions
                 // below - enabling it never forces an attack on its own, it just permits one when
@@ -195,7 +221,12 @@ namespace FollowHer
                 // is seeded from (and kept in sync with) Movement > Enable. It must NOT be OR'd with
                 // Enable here, or the hotkey could never turn following off while Enable is checked.
                 var movementActive = _movementToggled;
-                var isActive = combatActive || movementActive;
+
+                // Manual navigation has to keep the routine ticking even with following and fighting
+                // both off - otherwise pressing Go in the navigator would set a destination that
+                // nothing ever drives.
+                var navigationActive = Navigation?.IsActive == true;
+                var isActive = combatActive || movementActive || navigationActive;
 
                 MovementEnabled = movementActive;
                 // Reflects the master fighting switch, so the overlay tells you whether your hotkey
@@ -224,6 +255,10 @@ namespace FollowHer
 
         public override void Render()
         {
+            // The navigator is an interactive ImGui window rather than a world overlay, so it's
+            // deliberately outside the Enable Rendering gate (which governs the in-world drawing).
+            _targetNavigatorWindow.Draw(GameController);
+
             if (!Settings.Render.EnableRendering) return;
 
             EventBus.Instance.Publish(new RenderEvent(Graphics));
@@ -234,6 +269,24 @@ namespace FollowHer
             base.DrawSettings();
             _combatRuleEditor.Draw(Settings.Combat);
             _combatRuleEditor.DrawLeaderSkillBlacklist(Settings.Combat);
+        }
+
+        // Stop/resume for the manual target navigator. Runs early in the tick: before the alive check
+        // (see above) and before navigation's active state is read to decide whether the routine
+        // ticks, so a press takes effect on the same frame instead of the next one. PressedOnce()
+        // consumes the key's edge, so it must be evaluated before any condition that could
+        // short-circuit it away.
+        private void HandleNavigationHotkeys()
+        {
+            if (Settings.Navigation.StopKey.PressedOnce() && Navigation is { IsActive: true })
+            {
+                Navigation.Stop("stopped by hotkey");
+            }
+
+            if (Settings.Navigation.ResumeKey.PressedOnce())
+            {
+                Navigation?.Resume();
+            }
         }
 
         // Always resurrect at the checkpoint rather than in town - independent of the

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
@@ -6,6 +6,7 @@ using System.Windows.Forms;
 using ExileCore;
 using ExileCore.PoEMemory;
 using ExileCore.PoEMemory.Elements;
+using ExileCore.PoEMemory.Components;
 using ExileCore.PoEMemory.MemoryObjects;
 using ExileCore.Shared.Enums;
 using ExileCore.Shared.Helpers;
@@ -14,6 +15,7 @@ using FollowHer.Core.Events;
 using FollowHer.Core.Events.Events;
 using FollowHer.Features.Following.Pathfinding;
 using FollowHer.Features.Following.Tasks;
+using FollowHer.Features.Navigation;
 using FollowHer.Settings;
 using FollowHer.Utils;
 
@@ -26,10 +28,6 @@ public class FollowManager
     private const int MaxFollowPortalAttempts = 10;
     private const int PortalClickCooldownMs = 2500;
     private const int TpConfirmationTimeoutMs = 1500;
-    private const int MaxPathSearchNodes = 20000;
-    private const int PathSmoothingLookahead = 6;
-    private const float PathRetargetThresholdGrid = 20f;
-    private const int MinPathRecomputeIntervalMs = 400;
     // 1 grid unit = 250/23 world units (confirmed via ExileCore's own GridToWorld conversion,
     // matching the constant already used by other plugins in this install, e.g. Radar.cs).
     private const float GridToWorldMultiplier = 250f / 23f;
@@ -41,7 +39,13 @@ public class FollowManager
     private readonly SkillHandler _skillHandler;
     private readonly SkillMonitor _skillMonitor;
     private readonly LineOfSight _lineOfSight;
+    private readonly PathFollower _pathFollower;
     private readonly Random _random = new();
+
+    /// <summary>Manual "walk to this Radar target" navigation. Owned here because it drives the same
+    /// movement primitives (ExecuteMovement/StopMovement) and takes priority over following while a
+    /// destination is set.</summary>
+    public NavigationManager Navigation { get; }
 
     // Updated whenever the leader entity is visible - fallback target once they're no longer
     // directly resolvable (still believed to be in the same zone).
@@ -50,17 +54,19 @@ public class FollowManager
     // still tell "the leader was near this quest" after the leader has moved off or left the zone.
     private Vector3? _lastKnownLeaderWorldPos;
 
-    private List<(int x, int y)> _currentPath;
-    private int _currentPathIndex;
-    private (int x, int y)? _currentPathTarget;
-    private DateTime _nextPathRecomputeAt = DateTime.MinValue;
-
     // The single most recent target A* successfully reached - used as the search anchor when
     // pathfinding subsequently fails (the leader likely just stepped through a transition).
     private (int x, int y)? _lastPathfindableLeaderGrid;
     private (int x, int y)? _portalSearchReference;
     private int _portalClickAttempts;
     private DateTime _nextPortalClickAt = DateTime.MinValue;
+
+    // Rolling record of transitions the follower has clicked - (area hash, name, grid). Used as a
+    // recovery hint: when lost (e.g. after dying and resurrecting) with no live transition in range,
+    // head for one we've entered before in this same area. Not cleared on area change; entries are
+    // matched to the current area by hash so stale cross-zone coords are never used.
+    private const int MaxTransitionHistory = 5;
+    private readonly List<(uint areaHash, string name, Vector2 grid)> _transitionHistory = new();
 
     private string _lastKnownLeaderZone = "";
     private DateTime _leaderZoneChangeTime = DateTime.MinValue;
@@ -89,6 +95,12 @@ public class FollowManager
         _skillHandler = skillHandler;
         _skillMonitor = skillMonitor;
         _lineOfSight = new LineOfSight(gameController);
+        _pathFollower = new PathFollower(gameController, _lineOfSight);
+
+        // Its own PathFollower, so switching between following and manual navigation never inherits
+        // the other's cached route.
+        Navigation = new NavigationManager(gameController, this, new PathFollower(gameController, _lineOfSight));
+        FollowHer.Instance.Navigation = Navigation;
 
         EventBus.Instance.Subscribe<RenderEvent>(HandleRender);
     }
@@ -96,17 +108,31 @@ public class FollowManager
     public bool Update()
     {
         var settings = FollowHer.Instance.Settings.Movement;
+
+        // Manual navigation is a deliberate override: while a destination is set it owns movement,
+        // whether or not following is toggled on (and whether or not a leader is even configured).
+        try
+        {
+            if (Navigation.Update()) return true;
+        }
+        catch (Exception ex)
+        {
+            DebugWindow.LogError($"[FollowManager] Error during navigation: {ex.Message}");
+            Navigation.Stop($"error: {ex.Message}");
+        }
+
         // Gate on the live movement state (the hotkey-controlled toggle), not the raw Enable
         // setting - otherwise toggling movement on via the hotkey while Enable is unchecked would
         // let the routine run but never actually follow. MovementEnabled is set earlier this tick,
         // before the routine's TickEvent is dispatched, so it's current here.
-        if (!FollowHer.Instance.MovementEnabled) return false;
+        if (!FollowHer.Instance.MovementEnabled) return NotFollowing("movement is toggled off");
 
         var leaderName = FollowHer.Instance.Settings.LeaderName.Value;
-        if (string.IsNullOrWhiteSpace(leaderName)) return false;
+        if (string.IsNullOrWhiteSpace(leaderName)) return NotFollowing("no leader name configured");
 
         var player = _gameController.Player;
-        if (player == null || !player.IsAlive) return false;
+        if (player == null) return NotFollowing("no player entity");
+        if (!player.IsAlive) return NotFollowing("player reads as not alive");
 
         try
         {
@@ -279,10 +305,23 @@ public class FollowManager
         }
     }
 
-    private static (int x, int y) RoundGrid(Vector2 gridPos)
+    private string _lastNotFollowingReason;
+
+    // Every one of these means "no destination this tick", which the caller answers by releasing the
+    // movement key. That used to be a blind, held Move press, so the reason it happened never had to
+    // be visible; now that it's a real decision, log it - once per change, since it repeats per tick.
+    private bool NotFollowing(string reason)
     {
-        return ((int)Math.Round(gridPos.X), (int)Math.Round(gridPos.Y));
+        if (reason != _lastNotFollowingReason)
+        {
+            _lastNotFollowingReason = reason;
+            LogDebug($"Not following: {reason}");
+        }
+
+        return false;
     }
+
+    private static (int x, int y) RoundGrid(Vector2 gridPos) => PathFollower.RoundGrid(gridPos);
 
     private bool HasClearLineOfSight(Vector2 playerGrid, Vector2 targetGrid)
     {
@@ -331,14 +370,8 @@ public class FollowManager
     // Whether A* can find any walkable route from start to target. Used by the leader-jump check to
     // avoid treating a big position jump as a transition when the leader is actually still
     // reachable. Only called in that (rare, leader-is-far) path, so the extra A* isn't per-tick.
-    private bool HasWalkablePath((int x, int y) start, (int x, int y) target)
-    {
-        var grid = _lineOfSight.GetGrid(LineOfSightDataType.Walkable);
-        if (grid == null) return false;
-
-        var path = GridPathfinder.AStar(grid, start, target, MaxPathSearchNodes);
-        return path is { Count: > 0 };
-    }
+    private bool HasWalkablePath((int x, int y) start, (int x, int y) target) =>
+        _pathFollower.HasWalkablePath(start, target);
 
     // Whether there's a walkable route from the player to a target grid cell. Exposed for quest
     // tasks: once they can see a quest and confirm a path, they just click it and let the game walk
@@ -368,91 +401,56 @@ public class FollowManager
             return true;
         }
 
-        if (!settings.EnablePathfindingFallback)
-        {
-            // A* disabled - always walk straight at the (possibly obstructed) target.
-            return ExecuteMovement(GridToWorldPosition(target.x, target.y), new Vector2(target.x, target.y));
-        }
+        // Route computation/caching/smoothing lives in PathFollower, shared with the manual target
+        // navigator (Features/Navigation) so both drive identical pathfinding. Everything below is
+        // just the leader-specific interpretation of the outcome.
+        var step = _pathFollower.GetNextStep(target, settings.KeepWithinDistance * 1.5f);
 
-        var grid = _lineOfSight.GetGrid(LineOfSightDataType.Walkable);
-        if (grid == null)
+        if (step.PathJustComputed)
         {
-            // No terrain data yet - fall back to a direct walk toward the target.
-            return ExecuteMovement(GridToWorldPosition(target.x, target.y), new Vector2(target.x, target.y));
-        }
-
-        if (NeedsPathRecompute(target))
-        {
-            var rawPath = GridPathfinder.AStar(grid, start, target, MaxPathSearchNodes);
-            _currentPath = rawPath is { Count: > 0 } ? SmoothPath(rawPath) : null;
-            _currentPathIndex = 0;
-            _currentPathTarget = target;
-            _nextPathRecomputeAt = DateTime.Now.AddMilliseconds(MinPathRecomputeIntervalMs);
-
-            if (_currentPath != null)
-            {
-                _lastPathfindableLeaderGrid = target;
-                LogDebug($"Computed path to leader with {_currentPath.Count} waypoint(s)");
-            }
-            else
+            if (step.Kind == PathStepKind.NoPath)
             {
                 LogDebug("No path found to leader's position - they may have just gone through a transition");
             }
+            else
+            {
+                _lastPathfindableLeaderGrid = target;
+                LogDebug($"Computed path to leader with {_pathFollower.WaypointCount} waypoint(s)");
+            }
         }
 
-        if (_currentPath == null)
+        switch (step.Kind)
         {
-            if (!leaderVisible)
-            {
+            case PathStepKind.Moving:
+                return ExecuteMovement(step.World, step.Grid);
+
+            // Pathfinding disabled, or the area's terrain isn't readable yet - walk straight at the
+            // leader. Unchanged from before terrain availability became its own outcome: for
+            // following, heading roughly toward a leader we can see beats standing still.
+            case PathStepKind.Direct:
+            case PathStepKind.NoTerrainData:
+                return ExecuteMovement(step.World, step.Grid);
+
+            case PathStepKind.NoPath when leaderVisible:
+                // The leader is still visible - A* just couldn't reach their exact cell (they're
+                // often standing on a cell it treats as blocked). They haven't gone anywhere, so
+                // DON'T hunt for a transition; walk straight toward them instead.
+                return ExecuteMovement(GridToWorldPosition(target.x, target.y), new Vector2(target.x, target.y));
+
+            case PathStepKind.NoPath:
                 // No path AND the leader is out of sight - they've genuinely left (through a
                 // transition right here). This is the "disappeared" case: go find it.
                 return TryFollowThroughRecentPortal(player.PosNum, target);
-            }
 
-            // The leader is still visible - A* just couldn't reach their exact cell (they're often
-            // standing on a cell it treats as blocked). They haven't gone anywhere, so DON'T hunt
-            // for a transition; walk straight toward them instead.
-            return ExecuteMovement(GridToWorldPosition(target.x, target.y), new Vector2(target.x, target.y));
+            case PathStepKind.Arrived when !leaderVisible:
+                // Reached the end of the path to the leader's last known position and they're still
+                // not visible, so look for a nearby transition instead of idling.
+                return TryFollowThroughRecentPortal(player.PosNum, target);
+
+            default:
+                StopMovement();
+                return true;
         }
-
-        while (_currentPathIndex < _currentPath.Count)
-        {
-            var node = _currentPath[_currentPathIndex];
-            var nodeWorld = GridToWorldPosition(node.x, node.y);
-
-            if (Vector3.Distance(player.PosNum, nodeWorld) <= settings.KeepWithinDistance * 1.5f)
-            {
-                _currentPathIndex++;
-                continue;
-            }
-
-            return ExecuteMovement(nodeWorld, new Vector2(node.x, node.y));
-        }
-
-        if (!leaderVisible)
-        {
-            // Same as above - reached the end of the path to the leader's last known position
-            // and they're still not visible, so look for a nearby transition instead of idling.
-            return TryFollowThroughRecentPortal(player.PosNum, target);
-        }
-
-        StopMovement();
-        return true;
-    }
-
-    private bool NeedsPathRecompute((int x, int y) target)
-    {
-        if (_currentPathTarget == null) return true;
-        if (_currentPath == null) return DateTime.Now >= _nextPathRecomputeAt;
-        if (_currentPathIndex >= _currentPath.Count) return true;
-
-        var drift = Vector2.Distance(
-            new Vector2(target.x, target.y),
-            new Vector2(_currentPathTarget.Value.x, _currentPathTarget.Value.y));
-
-        if (drift <= PathRetargetThresholdGrid) return false;
-
-        return DateTime.Now >= _nextPathRecomputeAt;
     }
 
     // Pathfinding to the leader's believed position just failed while we still think we're in the
@@ -498,6 +496,21 @@ public class FollowManager
             if (Vector3.Distance(playerPos, searchWorld) > FollowPortalWalkTolerance)
             {
                 return ExecuteMovement(searchWorld, new Vector2(searchGrid.x, searchGrid.y));
+            }
+
+            // Recovery hint: we're at the leader's last spot with no transition in sight (e.g. we
+            // died, resurrected at the checkpoint, and the leader has moved on). Head for the
+            // nearest transition we've actually entered before in this same area - once we're near
+            // it, the live transition comes into range above and gets clicked.
+            var remembered = NearestRememberedTransition(playerPos);
+            if (remembered is { } rememberedGrid)
+            {
+                var rememberedWorld = GridToWorldPosition(rememberedGrid.x, rememberedGrid.y);
+                if (Vector3.Distance(playerPos, rememberedWorld) > FollowPortalWalkTolerance)
+                {
+                    LogDebug("No transition here - heading to one entered earlier in this area");
+                    return ExecuteMovement(rememberedWorld, new Vector2(rememberedGrid.x, rememberedGrid.y));
+                }
             }
 
             LogDebug("At the leader's last position but no transition found in range");
@@ -551,38 +564,37 @@ public class FollowManager
         // Prefer walking to and clicking the matching zone transition over teleporting - only
         // teleport if it's too far to bother walking to, or we can't see one at all.
         var playerPos = _gameController.Player.PosNum;
-        var portal = GetBestPortalLabel(leaderPartyMember.ZoneName, referencePosition);
+        var transition = GetBestTransition(leaderPartyMember.ZoneName, referencePosition);
         var maxWalkDistance = FollowHer.Instance.Settings.Movement.ZoneTransitionMaxWalkDistance.Value;
 
-        // A portal matching the target zone's name isn't necessarily the SAME connection the
-        // leader actually used - a zone can have multiple distinct transitions to another zone
-        // that lead to different regions of it (e.g. we die and respawn at the zone's entrance,
-        // which has its own transition to the next zone, while the leader actually went through a
-        // different transition elsewhere). Only trust the portal-walk path when the candidate is
-        // close to BOTH where we are now AND where the leader was last confirmed - if we just
-        // respawned somewhere else, the nearby-to-us candidate will fail this second check and we
-        // correctly fall back to teleporting straight to the leader instead.
-        var portalNearReference = portal != null &&
-                                   Vector3.Distance(referencePosition, portal.ItemOnGround.PosNum) <= maxWalkDistance;
+        // A transition isn't necessarily the SAME connection the leader actually used - a zone can
+        // have multiple distinct transitions to another zone (e.g. we die and respawn at the zone's
+        // entrance, which has its own transition, while the leader went through a different one).
+        // Only trust the walk path when the candidate is close to BOTH where we are now AND where
+        // the leader was last confirmed - if we just respawned elsewhere, the nearby-to-us candidate
+        // fails this second check and we correctly fall back to teleporting straight to the leader.
+        var transitionNearReference = transition != null &&
+                                       Vector3.Distance(referencePosition, transition.Value.WorldPos) <= maxWalkDistance;
 
-        if (portal != null && portalNearReference && Vector3.Distance(playerPos, portal.ItemOnGround.PosNum) <= maxWalkDistance)
+        if (transition != null && transitionNearReference &&
+            Vector3.Distance(playerPos, transition.Value.WorldPos) <= maxWalkDistance)
         {
-            return TryWalkToZoneTransitionPortal(portal, playerPos);
+            return TryWalkToZoneTransitionPortal(transition.Value, playerPos);
         }
 
-        LogDebug(portal == null
+        LogDebug(transition == null
             ? "No zone transition visible - falling back to teleport"
             : "Zone transition is too far from where we are or from the leader's last known position - falling back to teleport");
         return TryTeleportToLeader(leaderPartyMember, referencePosition);
     }
 
-    private bool TryWalkToZoneTransitionPortal(LabelOnGround portal, Vector3 playerPos)
+    private bool TryWalkToZoneTransitionPortal(TransitionTarget transition, Vector3 playerPos)
     {
-        var distanceToPortal = Vector3.Distance(playerPos, portal.ItemOnGround.PosNum);
+        var distanceToPortal = Vector3.Distance(playerPos, transition.WorldPos);
         var approachDistance = FollowHer.Instance.Settings.Movement.PortalApproachDistance.Value;
         if (distanceToPortal > approachDistance)
         {
-            return ExecuteMovement(portal.ItemOnGround.PosNum, portal.ItemOnGround.GridPosNum);
+            return ExecuteMovement(transition.WorldPos, transition.GridPos);
         }
 
         if (DateTime.Now < _nextPortalClickAt) return true;
@@ -591,7 +603,7 @@ public class FollowManager
         // Release any held movement input first - a still-held Move key/mouse button can swallow
         // or override the click that follows.
         StopMovement();
-        ClickElement(portal.Label);
+        ClickTransition(transition);
         _nextPortalClickAt = DateTime.Now.AddMilliseconds(PortalClickCooldownMs);
         return true;
     }
@@ -626,12 +638,14 @@ public class FollowManager
         public readonly Vector3 WorldPos;
         public readonly Vector2 GridPos;
         public readonly Element Label;
+        public readonly string Name;
 
-        public TransitionTarget(Vector3 worldPos, Vector2 gridPos, Element label)
+        public TransitionTarget(Vector3 worldPos, Vector2 gridPos, Element label, string name)
         {
             WorldPos = worldPos;
             GridPos = gridPos;
             Label = label;
+            Name = name;
         }
     }
 
@@ -668,46 +682,85 @@ public class FollowManager
         {
             var grid = RoundGrid(label.ItemOnGround.GridPosNum);
             if (seen.Add(grid))
-                yield return new TransitionTarget(label.ItemOnGround.PosNum, label.ItemOnGround.GridPosNum, label.Label);
+                yield return new TransitionTarget(label.ItemOnGround.PosNum, label.ItemOnGround.GridPosNum, label.Label, label.Label.Text);
         }
 
         foreach (var entity in GetTransitionEntities())
         {
             var grid = RoundGrid(entity.GridPosNum);
             if (seen.Add(grid))
-                yield return new TransitionTarget(entity.PosNum, entity.GridPosNum, null);
+                yield return new TransitionTarget(entity.PosNum, entity.GridPosNum, null, entity.RenderName);
         }
     }
 
     private void ClickTransition(TransitionTarget target)
     {
+        RecordEnteredTransition(target);
+
         if (target.Label != null)
             ClickElement(target.Label);
         else
             ClickWorldPosition(target.WorldPos);
     }
 
-    private LabelOnGround GetBestPortalLabel(string leaderZoneName, Vector3 referencePosition)
+    // Remembers a transition we just clicked, keyed to the current area, most-recent first. Clicking
+    // the same transition again just refreshes its recency rather than adding a duplicate.
+    private void RecordEnteredTransition(TransitionTarget target)
+    {
+        var areaHash = _gameController.Game.CurrentAreaHash;
+        _transitionHistory.RemoveAll(t => t.areaHash == areaHash && Vector2.Distance(t.grid, target.GridPos) < 5f);
+        _transitionHistory.Insert(0, (areaHash, target.Name ?? "", target.GridPos));
+        if (_transitionHistory.Count > MaxTransitionHistory)
+            _transitionHistory.RemoveAt(_transitionHistory.Count - 1);
+    }
+
+    // Nearest transition we've clicked before in the CURRENT area (by grid), or null if none. Used
+    // as a recovery hint when the follower is lost and no live transition is in range.
+    private (int x, int y)? NearestRememberedTransition(Vector3 playerPos)
+    {
+        var areaHash = _gameController.Game.CurrentAreaHash;
+        (int x, int y)? best = null;
+        var bestDistance = float.MaxValue;
+
+        foreach (var t in _transitionHistory)
+        {
+            if (t.areaHash != areaHash) continue;
+            var grid = ((int)t.grid.X, (int)t.grid.Y);
+            var world = GridToWorldPosition(grid.Item1, grid.Item2);
+            var distance = Vector3.Distance(playerPos, world);
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                best = grid;
+            }
+        }
+
+        return best;
+    }
+
+    private TransitionTarget? GetBestTransition(string leaderZoneName, Vector3 referencePosition)
     {
         var currentArea = _gameController.Area?.CurrentArea;
         var isHideout = currentArea?.IsHideout ?? false;
         var realLevel = currentArea?.RealLevel ?? 0;
 
-        var candidates = GetPortalCandidates().ToList();
-        if (candidates.Count == 0) return null;
-
-        if (isHideout || realLevel >= 68)
+        // Campaign: prefer a ground label whose text names the destination zone - most reliable when
+        // a zone has several transitions. But many transitions have generic labels ("Stairs",
+        // "Cave", "Entrance") that never contain the zone name, so this is only a preference.
+        if (!isHideout && realLevel < 68 && !string.IsNullOrEmpty(leaderZoneName))
         {
-            var portals = candidates.OrderBy(x => Vector3.Distance(referencePosition, x.ItemOnGround.PosNum)).ToList();
-            return isHideout ? portals[_random.Next(portals.Count)] : portals[0];
+            var named = GetPortalCandidates()
+                .Where(x => x.Label.Text != null && x.Label.Text.Contains(leaderZoneName, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(x => Vector3.Distance(referencePosition, x.ItemOnGround.PosNum))
+                .FirstOrDefault();
+            if (named != null)
+                return new TransitionTarget(named.ItemOnGround.PosNum, named.ItemOnGround.GridPosNum, named.Label, named.Label.Text);
         }
 
-        if (string.IsNullOrEmpty(leaderZoneName)) return null;
-
-        return candidates
-            .Where(x => x.Label.Text != null && x.Label.Text.Contains(leaderZoneName, StringComparison.OrdinalIgnoreCase))
-            .OrderBy(x => Vector3.Distance(referencePosition, x.ItemOnGround.PosNum))
-            .FirstOrDefault();
+        // Otherwise (hideout/endgame, or a generically-named transition like "Stairs" that couldn't
+        // be matched by zone name) fall back to the nearest transition of any kind - label or entity
+        // - to where the leader was last seen. This is what makes generic transitions work at all.
+        return FindNearbyTransition(referencePosition, float.MaxValue);
     }
 
     private TransitionTarget? FindNearbyTransition(Vector3 referencePosition, float maxDistance)
@@ -728,46 +781,7 @@ public class FollowManager
         return best;
     }
 
-    private List<(int x, int y)> SmoothPath(List<(int x, int y)> rawPath)
-    {
-        var smoothed = new List<(int x, int y)>();
-        var i = 0;
-
-        while (i < rawPath.Count)
-        {
-            var best = i;
-            for (var j = Math.Min(rawPath.Count - 1, i + PathSmoothingLookahead); j > i; j--)
-            {
-                try
-                {
-                    var from = new Vector2(rawPath[i].x, rawPath[i].y);
-                    var to = new Vector2(rawPath[j].x, rawPath[j].y);
-                    if (_lineOfSight.HasLineOfSight(from, to, LineOfSightDataType.Walkable))
-                    {
-                        best = j;
-                        break;
-                    }
-                }
-                catch
-                {
-                    // ignore LOS errors and keep best = i
-                }
-            }
-
-            smoothed.Add(rawPath[best]);
-            i = best + 1;
-        }
-
-        return smoothed;
-    }
-
-    private Vector3 GridToWorldPosition(int x, int y)
-    {
-        var gridPos = new Vector2(x, y);
-        var worldXy = gridPos.GridToWorld();
-        var z = _gameController.IngameState.Data.GetTerrainHeightAt(gridPos);
-        return new Vector3(worldXy.X, worldXy.Y, z);
-    }
+    private Vector3 GridToWorldPosition(int x, int y) => _pathFollower.GridToWorld(x, y);
 
     // Default path is teleport-to-player: click the party panel's TP button, then confirm the
     // popup it opens. Only if that popup never shows up (TP unavailable/failed) do we fall back
@@ -833,12 +847,12 @@ public class FollowManager
 
     private bool TryClickZoneTransitionPortal(string leaderZoneName, Vector3 referencePosition)
     {
-        var portal = GetBestPortalLabel(leaderZoneName, referencePosition);
-        if (portal == null) return true;
+        var transition = GetBestTransition(leaderZoneName, referencePosition);
+        if (transition == null) return true;
 
-        LogDebug($"Found matching portal for zone '{leaderZoneName}' - clicking");
+        LogDebug($"Found transition for zone '{leaderZoneName}' - clicking");
         StopMovement();
-        ClickElement(portal.Label);
+        ClickTransition(transition.Value);
         _nextTpActionAt = DateTime.Now.AddMilliseconds(500);
         return true;
     }
@@ -882,10 +896,19 @@ public class FollowManager
     // Called whenever Follow decides no movement is needed this tick - releases any held
     // movement/dash key so the character actually stops instead of drifting toward a stale
     // cursor position (see plan notes on the KeepWithinDistance freeze/ping-pong bug).
-    private void StopMovement()
+    // Internal so quest tasks can stop and settle before a precise label click.
+    internal void StopMovement()
     {
         _skillHandler.ReleaseAllSkills();
         _nextMovementInputAt = DateTime.MinValue;
+    }
+
+    // Whether the player character is currently moving. Quest tasks use this to hold a precise
+    // click until the character has actually stopped - clicking a ground label mid-move misses,
+    // because the label's screen position shifts as the character (and camera) move.
+    internal bool IsPlayerMoving()
+    {
+        return _gameController.Player?.GetComponent<Actor>()?.isMoving ?? false;
     }
 
     internal bool ExecuteMovement(Vector3 targetWorldPosition, Vector2? targetGridPosition = null, ActiveSkill forcedSkill = null)
@@ -965,7 +988,7 @@ public class FollowManager
         if (!HasTargetingLineOfSight(player.GridPosNum, leaderEntity.GridPosNum))
             return null;
 
-        var grid = _lineOfSight.GetGrid(LineOfSightDataType.Walkable);
+        var grid = _lineOfSight.GetGridReference(LineOfSightDataType.Walkable);
         if (grid == null) return null;
 
         var start = RoundGrid(player.GridPosNum);
@@ -974,7 +997,7 @@ public class FollowManager
         var directGrid = Vector2.Distance(new Vector2(start.x, start.y), new Vector2(target.x, target.y));
         if (directGrid < 1f) return null;
 
-        var path = GridPathfinder.AStar(grid, start, target, MaxPathSearchNodes);
+        var path = GridPathfinder.AStar(grid, start, target, PathFollower.MaxPathSearchNodes);
 
         // No walkable route at all, but targeting LOS to the leader is clear (checked above) - i.e.
         // a gap/chasm we can see across but not walk across. Blink is the only way there, so take it.
@@ -1037,7 +1060,7 @@ public class FollowManager
             // two use different walkability rules (LineOfSight only blocks on grid value 4;
             // GridPathfinder/HasCorridorClearance also blocks on 5, "Special" tiles), so requiring
             // both could silently reject a corridor the clearance check would otherwise approve.
-            var grid = _lineOfSight.GetGrid(LineOfSightDataType.Walkable);
+            var grid = _lineOfSight.GetGridReference(LineOfSightDataType.Walkable);
             if (grid == null)
             {
                 LogDebug("Movement skill: no terrain grid available yet - skipped");
@@ -1090,6 +1113,9 @@ public class FollowManager
 
     public void Reset(AreaInstance newArea)
     {
+        // Radar's targets are per-area, so a destination picked in the zone we just left means
+        // nothing here (its grid coordinates would point at an unrelated spot).
+        Navigation.ResetForArea();
         ClearState();
     }
 
@@ -1102,10 +1128,7 @@ public class FollowManager
     {
         _lastKnownLeaderGrid = null;
         _lastKnownLeaderWorldPos = null;
-        _currentPath = null;
-        _currentPathIndex = 0;
-        _currentPathTarget = null;
-        _nextPathRecomputeAt = DateTime.MinValue;
+        _pathFollower.Reset();
         _lastPathfindableLeaderGrid = null;
         _portalSearchReference = null;
         _portalClickAttempts = 0;
@@ -1118,6 +1141,7 @@ public class FollowManager
         _lastMoveTargetWorld = null;
         _pursuitMode = null;
         _pursuitModeLockedUntil = DateTime.MinValue;
+        _lastNotFollowingReason = null;
 
         foreach (var task in _tasks)
         {

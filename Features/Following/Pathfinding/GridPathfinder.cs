@@ -6,19 +6,36 @@ namespace FollowHer.Features.Following.Pathfinding;
 
 public static class GridPathfinder
 {
-    private class Node
-    {
-        public int X;
-        public int Y;
-        public int G;
-        public int H;
-        public int F => G + H;
-        public Node Parent;
+    // Per-cell search state, kept in flat arrays indexed by (y * width + x) rather than in objects in
+    // a Dictionary keyed by (x,y). The search touches ~8 cells per expansion, so tuple hashing and a
+    // Node allocation per cell dominated the cost - measured at ~42ms for a 40k-node search, against
+    // ~5ms for this. That matters because A* runs on the game thread: the budget that decides how far
+    // a route can reach is really a frame-time budget.
+    //
+    // The arrays are reused between calls (allocated once per area size). Instead of clearing them,
+    // each run bumps a generation counter and a cell's state only counts when its stamp matches -
+    // clearing 350k entries per call would have cost more than the search. [ThreadStatic] so this
+    // stays safe if a search is ever run off the game thread.
+    [ThreadStatic] private static int[] _gScore;
+    [ThreadStatic] private static int[] _parent;
+    [ThreadStatic] private static int[] _seenStamp;
+    [ThreadStatic] private static int[] _closedStamp;
+    [ThreadStatic] private static int _generation;
+    [ThreadStatic] private static PriorityQueue<int, (int f, int h)> _open;
 
-        public Node(int x, int y, int g, int h, Node parent = null)
+    private static void EnsureBuffers(int cellCount)
+    {
+        if (_gScore != null && _gScore.Length >= cellCount)
         {
-            X = x; Y = y; G = g; H = h; Parent = parent;
+            _generation++;
+            return;
         }
+
+        _gScore = new int[cellCount];
+        _parent = new int[cellCount];
+        _seenStamp = new int[cellCount];
+        _closedStamp = new int[cellCount];
+        _generation = 1;
     }
 
     // 8-directional neighbors
@@ -61,80 +78,145 @@ public static class GridPathfinder
     /// </summary>
     public static List<(int x, int y)> AStar(int[][] grid, (int x, int y) start, (int x, int y) target, int maxNodesToExplore = 20000)
     {
+        return AStar(grid, start, target, maxNodesToExplore, false, out _);
+    }
+
+    /// <summary>
+    /// As above, but <paramref name="allowPartialPath"/> asks for a best-effort route when the search
+    /// runs out of node budget before reaching the target: the path to the explored cell closest to
+    /// it, with <paramref name="isPartial"/> set. That distinguishes the two ways a search can fail,
+    /// which mean opposite things:
+    ///   - the open set empties     -> the target is genuinely unreachable (walled off), return null
+    ///   - the node budget runs out -> the target is just far away, the route so far is still good
+    /// Without this, anything beyond the budget's reach reports "no path" exactly like a wall does,
+    /// which is why a distant target Radar happily draws a line to used to fail here: Radar floods
+    /// the whole area from the target (uncapped, on a background thread, cached as a distance field),
+    /// while this runs per-call on the game thread and must stay bounded. Callers that ask a
+    /// yes/no reachability question (dash shortcut, leader-jump check) deliberately don't opt in - a
+    /// truncated route would answer "reachable" when nothing of the sort was established.
+    /// </summary>
+    public static List<(int x, int y)> AStar(int[][] grid, (int x, int y) start, (int x, int y) target,
+        int maxNodesToExplore, bool allowPartialPath, out bool isPartial)
+    {
+        isPartial = false;
         if (grid == null) return null;
         if (!IsWalkable(grid, target.x, target.y)) return null;
         if (!IsWalkable(grid, start.x, start.y)) return null;
 
-        var open = new List<Node>();
-        var closed = new HashSet<(int, int)>();
-        var nodeMap = new Dictionary<(int, int), Node>();
+        var height = grid.Length;
 
-        var startNode = new Node(start.x, start.y, 0, Heuristic(start.x, start.y, target.x, target.y));
-        open.Add(startNode);
-        nodeMap[(start.x, start.y)] = startNode;
+        // Widest row, not row 0's width: the flat index is y * width + x, so a row longer than the
+        // one used to size the stride would alias onto the next row's cells.
+        var width = 0;
+        for (var y = 0; y < height; y++)
+        {
+            if (grid[y] != null && grid[y].Length > width) width = grid[y].Length;
+        }
 
+        if (width == 0) return null;
+
+        EnsureBuffers(width * height);
+        var generation = _generation;
+
+        // A binary heap rather than a linear scan for the cheapest open cell: the old scan was O(n)
+        // per expansion, which is what kept the node budget too low to reach across a zone.
+        var open = _open ??= new PriorityQueue<int, (int f, int h)>();
+        open.Clear();
+
+        var startIndex = start.y * width + start.x;
+        var targetIndex = target.y * width + target.x;
+
+        var startH = Heuristic(start.x, start.y, target.x, target.y);
+        _gScore[startIndex] = 0;
+        _parent[startIndex] = -1;
+        _seenStamp[startIndex] = generation;
+        open.Enqueue(startIndex, (startH, startH));
+
+        // Closest cell to the target seen so far - the fallback when the budget runs out.
+        var bestIndex = startIndex;
+        var bestH = startH;
         var nodesExamined = 0;
 
-        while (open.Count > 0 && nodesExamined < maxNodesToExplore)
+        while (nodesExamined < maxNodesToExplore && open.TryDequeue(out var currentIndex, out _))
         {
-            var bestI = 0;
-            for (var i = 1; i < open.Count; i++)
-                if (open[i].F < open[bestI].F || (open[i].F == open[bestI].F && open[i].H < open[bestI].H))
-                    bestI = i;
-
-            var cur = open[bestI];
-            open.RemoveAt(bestI);
+            // The heap can hold several entries for one cell (a cheaper route to it was found after
+            // it was queued); only the first, cheapest one counts.
+            if (_closedStamp[currentIndex] == generation) continue;
+            _closedStamp[currentIndex] = generation;
             nodesExamined++;
 
-            if (cur.X == target.x && cur.Y == target.y)
+            var cx = currentIndex % width;
+            var cy = currentIndex / width;
+
+            var currentH = Heuristic(cx, cy, target.x, target.y);
+            if (currentH < bestH)
             {
-                var path = new List<(int x, int y)>();
-                var p = cur;
-                while (p != null && !(p.X == start.x && p.Y == start.y))
-                {
-                    path.Add((p.X, p.Y));
-                    p = p.Parent;
-                }
-                path.Reverse();
-                return path;
+                bestH = currentH;
+                bestIndex = currentIndex;
             }
 
-            closed.Add((cur.X, cur.Y));
+            if (currentIndex == targetIndex) return BuildPath(currentIndex, startIndex, width);
+
+            var currentG = _gScore[currentIndex];
 
             foreach (var n in Neighbors)
             {
-                var nx = cur.X + n.dx;
-                var ny = cur.Y + n.dy;
+                var nx = cx + n.dx;
+                var ny = cy + n.dy;
                 if (!IsWalkable(grid, nx, ny)) continue;
 
                 // Prevent cutting corners when diagonal if either adjacent orthogonal is blocked.
                 if (Math.Abs(n.dx) + Math.Abs(n.dy) == 2)
                 {
-                    if (!IsWalkable(grid, cur.X + n.dx, cur.Y) || !IsWalkable(grid, cur.X, cur.Y + n.dy))
+                    if (!IsWalkable(grid, cx + n.dx, cy) || !IsWalkable(grid, cx, cy + n.dy))
                         continue;
                 }
 
-                if (closed.Contains((nx, ny))) continue;
+                var neighborIndex = ny * width + nx;
+                if (_closedStamp[neighborIndex] == generation) continue;
 
-                var tentativeG = cur.G + n.cost;
-                var key = (nx, ny);
+                var tentativeG = currentG + n.cost;
+                if (_seenStamp[neighborIndex] == generation && tentativeG >= _gScore[neighborIndex]) continue;
 
-                if (!nodeMap.TryGetValue(key, out var neighborNode))
-                {
-                    neighborNode = new Node(nx, ny, tentativeG, Heuristic(nx, ny, target.x, target.y), cur);
-                    nodeMap[key] = neighborNode;
-                    open.Add(neighborNode);
-                }
-                else if (tentativeG < neighborNode.G)
-                {
-                    neighborNode.G = tentativeG;
-                    neighborNode.Parent = cur;
-                }
+                _seenStamp[neighborIndex] = generation;
+                _gScore[neighborIndex] = tentativeG;
+                _parent[neighborIndex] = currentIndex;
+
+                var h = Heuristic(nx, ny, target.x, target.y);
+                // Re-queued at the improved priority when a cheaper route is found; the closed check
+                // above discards the stale entry.
+                open.Enqueue(neighborIndex, (tentativeG + h, h));
             }
+        }
+
+        // open.Count > 0 means we stopped on the budget rather than running out of reachable cells.
+        if (allowPartialPath && open.Count > 0 && bestIndex != startIndex)
+        {
+            isPartial = true;
+            return BuildPath(bestIndex, startIndex, width);
         }
 
         return null;
     }
+
+    private static List<(int x, int y)> BuildPath(int endIndex, int startIndex, int width)
+    {
+        var path = new List<(int x, int y)>();
+        var current = endIndex;
+        while (current != -1 && current != startIndex)
+        {
+            path.Add((current % width, current / width));
+            current = _parent[current];
+        }
+
+        path.Reverse();
+        return path;
+    }
+
+    /// <summary>Whether a grid cell can be stood on. Exposed so callers can nudge a destination onto
+    /// walkable ground before asking for a path (a target cell that isn't walkable fails instantly,
+    /// however close it is).</summary>
+    public static bool IsCellWalkable(int[][] grid, int x, int y) => IsWalkable(grid, x, y);
 
     // Checks a band of parallel lines (centerline plus +/-marginCells offsets perpendicular to
     // travel) rather than a single ray, so a skill that travels in a straight line and collides
@@ -182,22 +264,20 @@ public static class GridPathfinder
         var dy = to.Y - from.Y;
         var steps = (int)Math.Ceiling(Math.Max(Math.Abs(dx), Math.Abs(dy)));
 
-        if (steps <= 0)
-        {
-            var x0 = (int)Math.Round(from.X);
-            var y0 = (int)Math.Round(from.Y);
-            if (IsWalkable(grid, x0, y0)) return true;
-
-            blockX = x0;
-            blockY = y0;
-            blockValue = InBounds(grid, x0, y0) ? grid[y0][x0] : -2;
-            return false;
-        }
+        // Same cell after rounding - nothing travelled, so nothing to collide with.
+        if (steps <= 0) return true;
 
         var stepX = dx / steps;
         var stepY = dy / steps;
 
-        for (var i = 0; i <= steps; i++)
+        // Deliberately skip the first (i=0) and last (i=steps) sampled cells. Those are where the
+        // player and the target entity stand, and entities routinely occupy cells the pathfinding
+        // grid marks as blocked (value 0) - hard against a wall, in a doorway, on a terrain edge. A
+        // ground dash starting or ending on such a cell isn't a collision; only the cells it
+        // travels THROUGH are. Without this the check failed at "offset 0.0 ... value 0" on the
+        // player's own cell every tick, so a ground-dash skill could never be used (and no clearance
+        // margin could fix it, since it's the centerline's start cell, not hitbox width).
+        for (var i = 1; i < steps; i++)
         {
             var x = (int)Math.Round(from.X + stepX * i);
             var y = (int)Math.Round(from.Y + stepY * i);

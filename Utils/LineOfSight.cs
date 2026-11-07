@@ -29,8 +29,21 @@ namespace FollowHer.Utils
         private readonly List<(Vector2 Pos, int Value)> _debugPoints = new();
         private readonly List<(Vector2 Start, Vector2 End, bool IsVisible)> _debugRays = new();
         private readonly HashSet<Vector2> _debugVisiblePoints = new();
+
+        // Whether the ray walkers below should record the cells they visit. They're on the hot path -
+        // path smoothing alone fires thousands of rays per route computation - and _debugVisiblePoints
+        // is only ever cleared while the debug overlay is on, so recording unconditionally both cost
+        // time on every step and grew the set for the whole session when nothing would ever read it.
+        private bool _recordDebugPoints;
         private float _lastObserverZ;
         private Vector2 _lastDebugGridCenter;
+
+        // The area the cached grids were read for, so a stale one is never answered from.
+        private const int ValidationIntervalMs = 250;
+        private const int PopulateRetryIntervalMs = 500;
+        private uint _dataAreaHash;
+        private DateTime _nextValidationAt = DateTime.MinValue;
+        private DateTime _nextPopulateRetryAt = DateTime.MinValue;
 
         public LineOfSight(GameController gameController)
         {
@@ -117,28 +130,81 @@ namespace FollowHer.Utils
         
         private void HandleAreaChange(AreaChangeEvent evt)
         {
+            // Drop the old area's grids before trying to read the new ones. If the read fails (the
+            // game often isn't done writing terrain the instant the area-change fires), having *no*
+            // data is recoverable - EnsureCurrentAreaData retries and callers fall back to walking
+            // straight. Keeping the previous zone's grid is not: it silently pathfinds on the wrong
+            // map, which looks like the character deciding to walk into a wall.
+            _terrainData = null;
+            _walkableData = null;
+            _dataAreaHash = 0;
+            _nextPopulateRetryAt = DateTime.MinValue;
+            _nextValidationAt = DateTime.MinValue;
+
             PopulateTerrainData();
         }
 
-        private void PopulateTerrainData()
+        /// <summary>Makes sure the cached grids belong to the area we're standing in, repopulating if
+        /// they don't. Nothing else validated this: the data was only ever refreshed by the area-change
+        /// event, so one failed refresh left every later query answering from the previous zone.
+        /// The area hash is only re-read every <see cref="ValidationIntervalMs"/> because this sits on
+        /// the path-smoothing hot path, which asks thousands of times per route.</summary>
+        private bool EnsureCurrentAreaData()
         {
-            _areaDimensions = _gameController.IngameState.Data.AreaDimensions;
-            var rawTargetingData = _gameController.IngameState.Data.RawTerrainTargetingData;
-            var rawWalkableData = _gameController.IngameState.Data.RawPathfindingData;
+            var now = DateTime.Now;
+            var haveData = _terrainData != null && _walkableData != null;
+            if (haveData && now < _nextValidationAt) return true;
 
-            _terrainData = new int[rawTargetingData.Length][];
-            Parallel.For(0, rawTargetingData.Length, y =>
+            uint areaHash;
+            try
             {
-                _terrainData[y] = new int[rawTargetingData[y].Length];
-                Array.Copy(rawTargetingData[y], _terrainData[y], rawTargetingData[y].Length);
-            });
+                areaHash = _gameController.Game?.CurrentAreaHash ?? 0;
+            }
+            catch
+            {
+                return haveData;
+            }
 
-            _walkableData = new int[rawWalkableData.Length][];
-            Parallel.For(0, rawWalkableData.Length, y =>
+            _nextValidationAt = now.AddMilliseconds(ValidationIntervalMs);
+            if (haveData && _dataAreaHash == areaHash) return true;
+
+            if (now < _nextPopulateRetryAt) return false;
+            _nextPopulateRetryAt = now.AddMilliseconds(PopulateRetryIntervalMs);
+            return PopulateTerrainData();
+        }
+
+        /// <summary>Reads both terrain layers for the current area. Everything is built into locals and
+        /// published in one go at the end: a half-applied refresh (new targeting layer, previous
+        /// zone's walkable layer) is worse than no refresh at all, and the assignments used to be
+        /// interleaved with the reads that can throw.</summary>
+        private bool PopulateTerrainData()
+        {
+            try
             {
-                _walkableData[y] = new int[rawWalkableData[y].Length];
-                Array.Copy(rawWalkableData[y], _walkableData[y], rawWalkableData[y].Length);
-            });
+                var areaHash = _gameController.Game?.CurrentAreaHash ?? 0;
+                var dimensions = _gameController.IngameState.Data.AreaDimensions;
+                var rawTargetingData = _gameController.IngameState.Data.RawTerrainTargetingData;
+                var rawWalkableData = _gameController.IngameState.Data.RawPathfindingData;
+
+                if (rawTargetingData == null || rawWalkableData == null)
+                {
+                    DebugWindow.LogError("[LineOfSight] Terrain data isn't available yet - will retry");
+                    return false;
+                }
+
+                var terrainData = CopyGrid(rawTargetingData);
+                var walkableData = CopyGrid(rawWalkableData);
+
+                _areaDimensions = dimensions;
+                _terrainData = terrainData;
+                _walkableData = walkableData;
+                _dataAreaHash = areaHash;
+            }
+            catch (Exception ex)
+            {
+                DebugWindow.LogError($"[LineOfSight] Failed to read terrain data: {ex.Message} - will retry");
+                return false;
+            }
 
             var debugVisualsEnabled = FollowHer.Instance.Settings.Render.EnableRendering &&
                                        (FollowHer.Instance.Settings.Render.ShowTerrainDebug ||
@@ -148,6 +214,22 @@ namespace FollowHer.Utils
             {
                 UpdateDebugGrid(_gameController.Player.GridPosNum, LineOfSightDataType.Terrain);
             }
+
+            return true;
+        }
+
+        private static int[][] CopyGrid(int[][] source)
+        {
+            var copy = new int[source.Length][];
+            Parallel.For(0, source.Length, y =>
+            {
+                var row = source[y];
+                if (row == null) return;
+                copy[y] = new int[row.Length];
+                Array.Copy(row, copy[y], row.Length);
+            });
+
+            return copy;
         }
 
         private void UpdateDebugGrid(Vector2 center, LineOfSightDataType losType)
@@ -176,6 +258,9 @@ namespace FollowHer.Utils
 
         public bool HasLineOfSight(Vector2 start, Vector2 end, LineOfSightDataType losType)
         {
+            // Same check the grid accessors make - answering a sight query from the previous zone's
+            // terrain is how a route ends up walking into a wall.
+            if (!EnsureCurrentAreaData()) return false;
             if (_terrainData == null) return false;
 
             // Debug visualization bookkeeping (UpdateDebugGrid is an O(size^2) rebuild) is only
@@ -184,6 +269,8 @@ namespace FollowHer.Utils
             var debugVisualsEnabled = FollowHer.Instance.Settings.Render.EnableRendering &&
                                        (FollowHer.Instance.Settings.Render.ShowTerrainDebug ||
                                         FollowHer.Instance.Settings.Render.ShowWalkableDebug);
+
+            _recordDebugPoints = debugVisualsEnabled;
 
             if (debugVisualsEnabled)
             {
@@ -250,7 +337,7 @@ namespace FollowHer.Utils
                 y += step;
                 var pos = new Vector2(x, y);
                 var terrainValue = GetValue(pos, losType);
-                _debugVisiblePoints.Add(pos);
+                if (_recordDebugPoints) _debugVisiblePoints.Add(pos);
 
                 if (IsBlocking(terrainValue, losType)) return false;
             }
@@ -268,7 +355,7 @@ namespace FollowHer.Utils
                 x += step;
                 var pos = new Vector2(x, y);
                 var terrainValue = GetValue(pos, losType);
-                _debugVisiblePoints.Add(pos);
+                if (_recordDebugPoints) _debugVisiblePoints.Add(pos);
 
                 if (IsBlocking(terrainValue, losType)) return false;
             }
@@ -301,7 +388,7 @@ namespace FollowHer.Utils
 
                     var pos = new Vector2(x, y);
                     var terrainValue = GetValue(pos, losType);
-                    _debugVisiblePoints.Add(pos);
+                    if (_recordDebugPoints) _debugVisiblePoints.Add(pos);
 
                     if (IsBlocking(terrainValue, losType)) return false;
                 }
@@ -324,7 +411,7 @@ namespace FollowHer.Utils
 
                     var pos = new Vector2(x, y);
                     var terrainValue = GetValue(pos, losType);
-                    _debugVisiblePoints.Add(pos);
+                    if (_recordDebugPoints) _debugVisiblePoints.Add(pos);
 
                     if (IsBlocking(terrainValue, losType)) return false;
                 }
@@ -364,8 +451,22 @@ namespace FollowHer.Utils
 
         public Vector2 AreaDimensions => _areaDimensions;
 
+        /// <summary>The live grid, without copying. For read-only use - the pathfinder and the
+        /// clearance checks only ever read it, and <see cref="GetGrid"/>'s deep copy is 1771x2048
+        /// ints (~14 MB) on a normal area, which it was paying on every path recompute and every
+        /// line-of-sight-grid query. Callers must not write to what they get back.</summary>
+        public int[][] GetGridReference(LineOfSightDataType losType = LineOfSightDataType.Walkable)
+        {
+            if (!EnsureCurrentAreaData()) return null;
+            return losType == LineOfSightDataType.Walkable ? _walkableData : _terrainData;
+        }
+
+        /// <summary>A private copy of the grid, safe to mutate. Prefer
+        /// <see cref="GetGridReference"/> unless you actually need to write to it.</summary>
         public int[][] GetGrid(LineOfSightDataType losType = LineOfSightDataType.Walkable)
         {
+            if (!EnsureCurrentAreaData()) return null;
+
             var source = losType == LineOfSightDataType.Walkable ? _walkableData : _terrainData;
             if (source == null) return null;
 
@@ -384,6 +485,7 @@ namespace FollowHer.Utils
         {
             _terrainData = null;
             _walkableData = null;
+            _dataAreaHash = 0;
             _debugPoints.Clear();
             _debugRays.Clear();
             _debugVisiblePoints.Clear();

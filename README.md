@@ -14,6 +14,7 @@ You control your main; FollowHer plays the follower.
 - [Quick start](#quick-start)
 - [How it works: Movement vs Fighting](#how-it-works-movement-vs-fighting)
 - [Runtime controls (hotkeys & overlay)](#runtime-controls-hotkeys--overlay)
+- [Target navigator (walk to a Radar target)](#target-navigator-walk-to-a-radar-target)
 - [Combat rule profiles](#combat-rule-profiles)
   - [Skills](#skills)
   - [Creating a profile](#creating-a-profile)
@@ -25,6 +26,7 @@ You control your main; FollowHer plays the follower.
   - [Hotkeys](#hotkeys)
   - [Party](#party)
   - [Movement](#movement)
+  - [Navigation](#navigation)
   - [Combat](#combat)
   - [Targeting](#targeting)
   - [Render](#render)
@@ -39,6 +41,7 @@ You control your main; FollowHer plays the follower.
 - ExileApi / PoeHelper (HUD) running against Path of Exile.
 - Put the source under `Plugins/Source/FollowHer` (HUD compiles it for you) or drop a compiled build under `Plugins/Compiled/FollowHer`.
 - Run the leader and the follower as **separate game clients**. FollowHer runs on the follower's client.
+- Optional: the **Radar** plugin, installed and enabled. Only the [target navigator](#target-navigator-walk-to-a-radar-target) uses it; everything else works without it.
 
 A note on distances: follow/attack distances (leader distance, movement-skill hops) are in **world units**; targeting radii (scan radius, target range) are in **grid units** (≈ 10.9 world units per grid cell). Each setting's tooltip tells you what it affects.
 
@@ -83,6 +86,29 @@ All bound under **Hotkeys**:
 | **Precision Toggle Key** | Same as above, as a toggle instead of hold. |
 
 Movement following survives zone transitions on purpose (that's the point); the fighting/precision toggles reset on area change.
+
+---
+
+## Target navigator (walk to a Radar target)
+
+A small overlay window that lists every point of interest **Radar** marks in the current area — waypoints, zone transitions (labelled with their destination, e.g. *"The Solaris Temple Level 1"*), league mechanics, boss rooms — each with a **Go** button that walks the character there.
+
+It runs on the *same* pathfinding the follow logic uses (A* over the walkable grid, the same smoothing, waypoint advancing and movement-skill selection), which makes it a repeatable way to **test that pathfinding on demand**: pick something across the zone, press Go, watch whether it gets there — no second client and no leader needed.
+
+**Using it**
+
+1. Bind **Navigation > Target Navigator Toggle Key** (or tick **Show Target Navigator**).
+2. Press **Go** on a target. Navigation is a manual override: while a destination is set it takes priority over following the leader, and it keeps the plugin ticking even with the movement and fighting toggles off.
+3. It stops on arrival, on **Stop**, if no walkable path exists, on timeout, or when you change area.
+4. Bind **Stop Navigation Key** / **Resume Navigation Key** to interrupt and pick the same target back up without opening the window — handy for taking manual control through a fight, then carrying on. The buttons show their bound key, and the header shows which target Resume would take.
+
+The stopped target is remembered until you change area (grid coordinates only mean anything within the area they came from). **Resume** replans from wherever you're standing rather than continuing the old route.
+
+The status line reports what it's doing — distance left, waypoints remaining, `final approach`, `no walkable path`, `gave up - timed out`. With **Movement > Visual > Show Follow Path** on you also get the usual line to the current waypoint.
+
+**Where the targets come from.** They're Radar's own, not a second list to maintain: the target *names* are read from Radar's `targets.json` (the current area's block plus the global `*` block) and the *positions* come from Radar itself over the plugin bridge (`Radar.ClusterTarget`), so they're the exact cells Radar draws on its map — its clustering, snapped to walkable tiles by its own code.
+
+That means **Radar must be installed and enabled** for the list to populate; without it the window says so instead of listing anything. Two Radar features the bridge signature can't carry: a target's `Rooms` filter is ignored, and room-scoped entries (those with `Name: "*"`) are skipped since there's no tile pattern to resolve. Coverage is whatever Radar defines — the campaign is well covered (most acts define the transitions of every zone); a map with no entry of its own only shows the global targets.
 
 ---
 
@@ -218,6 +244,7 @@ See [Runtime controls](#runtime-controls-hotkeys--overlay). Precision Key / Prec
 | **Dash Shortcut Path Ratio** | 1.5 | When LOS to the leader is blocked, blink straight to them instead of pathfinding if the walkable route is at least this many times longer than the straight line. `1` = always blink when blocked; higher = only to skip a big detour. |
 | **Movement Skill Min Distance** | 100 | Don't use a movement skill for a hop shorter than this. |
 | **Movement Skill Max Distance** | 1000 | Don't use a movement skill for a hop longer than this. |
+| **Max Waypoint Distance** | 400 | How far apart path waypoints may be placed (world units) where the way ahead is clear. Corners keep tight waypoints on their own; this only stretches the straight sections. See [Movement skills](#movement-skills). |
 | **Input Frequency (ms)** | 50 | Minimum delay between successive movement inputs. |
 | **Enable Pathfinding Fallback** | on | Use A* pathfinding around obstacles. Off = always walk straight at the target. |
 | **Movement Skills** | — | Auto-discovered movement skills with per-skill options. |
@@ -244,6 +271,20 @@ See [Runtime controls](#runtime-controls-hotkeys--overlay). Precision Key / Prec
 | **Quest Item Pickup Range** | 500 | Max distance to a quest item before going for it. |
 | **Click Quest Objects** | on | Walk to and click nearby quest objects (levers, etc.). |
 | **Quest Object Click Range** | 300 | Max distance to a quest object before going for it. |
+
+### Navigation
+
+Settings for the [target navigator](#target-navigator-walk-to-a-radar-target).
+
+| Setting | Default | Description |
+|---|---|---|
+| **Show Target Navigator** | off | Show the overlay window listing this area's Radar targets. |
+| **Target Navigator Toggle Key** | none | Shows/hides that window. |
+| **Stop Navigation Key** | none | Stops walking to the current target. The target is remembered. |
+| **Resume Navigation Key** | none | Walks to the last picked target again, replanning from where you're standing. |
+| **Arrival Distance** | 60 | Stop this close (world units) to the chosen target — targets sit on a tile cluster's center, which you often can't stand exactly on. |
+| **Navigation Timeout (s)** | 180 | Give up on a destination after this long. `0` = never give up. |
+| **Radar targets.json Path** | blank | Blank auto-detects it under `Plugins/Source/Radar` (or `Plugins/Compiled/Radar`). Set it only if your Radar install lives elsewhere. |
 
 ### Combat
 
@@ -362,6 +403,15 @@ Both are bounded by **Movement Skill Min/Max Distance**. Which bucket a skill la
 
 **Dash Shortcut Path Ratio** ties into Dash Enabled: when LOS to the leader is blocked and a blink skill is ready, the follower compares the walkable detour to the straight-line distance and blinks straight to the leader if the detour is at least that many times longer — instead of pathfinding the long way around.
 
+### Why a movement skill never fires while pathfinding
+
+While following a path, the skill is judged against the **next waypoint**, not the final destination — so a hop only qualifies if the waypoint is at least **Movement Skill Min Distance** away. Two settings decide how far out that waypoint is:
+
+- **Max Waypoint Distance** is the ceiling. A* produces a route cell by cell; waypoints are placed at the furthest cell each one still has a clear walkable line to, so corners stay tight (the line breaks there) and straight stretches collapse into a single long hop. Raise this to get hops worth dashing.
+- **Keep Within Distance × 1.5** is the floor — waypoints closer than that count as already reached and are skipped. Waypoint spacing below that ceiling has no effect, so if you follow very tightly, lower Keep Within Distance too.
+
+Worth knowing for **ground dashes** specifically: they also need a clear corridor of **Movement Skill Clearance Margin** cells on each side along the *whole* hop, so a very long waypoint distance can make them fire *less* often in cluttered terrain. Blinks are unaffected by that, but they deliberately only fire where the walkable line is blocked — which a path waypoint never is, by construction — so on a path they only come into play through Dash Shortcut Path Ratio.
+
 ---
 
 ## Troubleshooting
@@ -377,6 +427,12 @@ Add that skill to the **Leader Skill Blacklist** (Combat settings). Movement ski
 
 **Follower reaches the leader's last spot but never takes the transition.**
 Raise **Movement > Transition Search Radius**. Turn on **Movement > Debug > Show Detailed Debug** to see the transition-follow decisions.
+
+**The navigator says a target is "cut off" that Radar draws a line to.**
+Distance alone no longer causes this — a search that exhausts its node budget now returns a best-effort route and extends it as you walk, so only a genuinely disconnected target reports it. Two things can still legitimately differ from Radar: it optionally paths through **triggerable blockades** (its *Clear Triggerable Blockades* option, on by default, opens doors and blockades before pathing) whereas FollowHer reads the raw walkable grid, and its route ignores whether *you* can open what's in the way.
+
+**The target navigator lists nothing.**
+The status line next to **Refresh** says why: Radar not loaded (it must be installed **and enabled** — it's what supplies the positions), `targets.json` not found (set **Navigation > Radar targets.json Path**), or Radar defines no targets for this area. Right after a zone load it can take a moment before Radar has processed the area; the window retries on its own, or press **Refresh**.
 
 **A specific movement skill isn't recognized.**
 Skills are read off the skill bar on area load. Skill-name matching is case/space-insensitive and checks both display and internal names; if one still isn't picked up, note its internal name and it can be added.

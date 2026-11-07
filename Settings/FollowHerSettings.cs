@@ -23,6 +23,7 @@ public class FollowHerSettings : ISettings
     public PartySettings Party { get; set; } = new();
     public AutomationSettings Automation { get; set; } = new();
     public MovementSettings Movement { get; set; } = new();
+    public NavigationSettings Navigation { get; set; } = new();
     public CombatSettings Combat { get; set; } = new();
     public TargetingSettings Targeting { get; set; } = new();
     public RenderSettings Render { get; set; } = new();
@@ -103,6 +104,9 @@ public class MovementSettings
     [Menu("Movement Skill Max Distance", "Don't use a movement skill (Dash Enabled/Prefer Movement Skills For Travel) for a hop longer than this")]
     public RangeNode<int> MovementSkillMaxDistance { get; set; } = new(1000, 100, 3000);
 
+    [Menu("Max Waypoint Distance", "How far apart path waypoints may be placed (world units) where the way ahead is clear. Corners and turns keep tight waypoints on their own - the line of sight breaks there - so raising this only stretches the straight sections, which is what gives a movement skill a hop long enough to be worth using. Note it can't produce a movement target closer than Keep Within Distance x 1.5, since waypoints inside that are treated as already reached.")]
+    public RangeNode<int> MaxWaypointDistance { get; set; } = new(400, 50, 2000);
+
     [Menu("Input Frequency (ms)", "Minimum delay between successive movement inputs")]
     public RangeNode<int> InputFrequency { get; set; } = new(50, 1, 100);
 
@@ -150,6 +154,31 @@ public class MovementSettings
         [Menu("Quest Object Click Range", "Maximum distance to a quest object before walking to click it")]
         public RangeNode<int> QuestObjectClickRange { get; set; } = new(300, 50, 2000);
     }
+}
+
+[Submenu(CollapsedByDefault = true)]
+public class NavigationSettings
+{
+    [Menu("Show Target Navigator", "Show the overlay window listing this area's Radar targets, each with a button that walks you there using the follow pathfinding")]
+    public ToggleNode ShowWindow { get; set; } = new(false);
+
+    [Menu("Target Navigator Toggle Key", "Shows/hides the target navigator window")]
+    public HotkeyNode ToggleWindowKey { get; set; } = new(Keys.None);
+
+    [Menu("Stop Navigation Key", "Stops walking to the current target. The target is remembered, so Resume picks it back up.")]
+    public HotkeyNode StopKey { get; set; } = new(Keys.None);
+
+    [Menu("Resume Navigation Key", "Walks to the last picked target again, replanning from where you're standing. Forgotten on area change.")]
+    public HotkeyNode ResumeKey { get; set; } = new(Keys.None);
+
+    [Menu("Arrival Distance", "Stop when this close (world units) to the chosen target - targets sit on a tile cluster's center, which you often can't stand exactly on")]
+    public RangeNode<int> ArrivalDistance { get; set; } = new(60, 10, 500);
+
+    [Menu("Navigation Timeout (s)", "Give up on a destination after this long. 0 = never give up.")]
+    public RangeNode<int> Timeout { get; set; } = new(180, 0, 900);
+
+    [Menu("Radar targets.json Path", "Leave blank to auto-detect it under Plugins/Source/Radar (or Plugins/Compiled/Radar). Set it only if your Radar install lives somewhere else.")]
+    public TextNode RadarTargetsPath { get; set; } = new("");
 }
 
 [Submenu(CollapsedByDefault = true)]
