@@ -55,6 +55,15 @@ public class NavigationManager
     /// <summary>What our walkable grid says about a target's cell - for the navigator's tooltips.</summary>
     public string DescribeTargetCell((int x, int y) cell) => _pathFollower.DescribeCell(cell);
 
+    /// <summary>Picks the target the Move Key (and the window's "Walk to selected" button) will walk
+    /// to, without starting a walk. Picking a different one while walking just changes what a later
+    /// start will use - it doesn't redirect the walk in progress.</summary>
+    public void Select(NavTarget target)
+    {
+        LastTarget = target;
+        if (!IsActive) Status = $"selected {target.Label}";
+    }
+
     public void Start(NavTarget target)
     {
         // Remembered even if the start below refuses: the reason may be where we're standing, so

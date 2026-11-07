@@ -12,6 +12,7 @@ You control your main; FollowHer plays the follower.
 
 - [Requirements & install](#requirements--install)
 - [Quick start](#quick-start)
+- [Modes: Follow and Navigator](#modes-follow-and-navigator)
 - [How it works: Movement vs Fighting](#how-it-works-movement-vs-fighting)
 - [Runtime controls (hotkeys & overlay)](#runtime-controls-hotkeys--overlay)
 - [Target navigator (walk to a Radar target)](#target-navigator-walk-to-a-radar-target)
@@ -59,7 +60,26 @@ A note on distances: follow/attack distances (leader distance, movement-skill ho
 
 ---
 
+## Modes: Follow and Navigator
+
+The plugin runs in exactly one of two **modes**, chosen by the **Mode** setting. Switching stops whatever the other mode was doing.
+
+| | **Follow** | **Navigator** |
+|---|---|---|
+| Moves toward | the leader (**Leader Name**) | the target last clicked in the navigator window |
+| Starts moving | **Movement Toggle Key** | **Move Key** — *Toggle* (press to start, press to stop) or *Hold* (walks while held) |
+| Fights | when the leader fights (**Attack When Leader Is Attacking**), gated by **Fighting Toggle Key**; Precision overrides | **only while the Precision key is held** (or Precision Toggle is on); otherwise it moves |
+| Pathing | chases a moving target: cheap budgeted search, replanned as the leader moves | walks to a fixed point: one whole-zone search, route cached |
+| Extras | zone-transition following, party-invite accept, quest object/item tasks | the Radar target window, Stop/Resume keys |
+| Shared | combat rule profiles, targeting, movement skills and jump planning, gem auto-level, resurrect, overlays | |
+
+In Navigator mode the leader settings, the Movement and Fighting Toggle Keys and the leader attack gate do nothing. Fighting and moving take turns: with the fight key held and an enemy in range the character stops and fights; when the key is released, or nothing is left to hit, it carries on walking.
+
+---
+
 ## How it works: Movement vs Fighting
+
+*(Follow mode.)*
 
 FollowHer has two independent runtime states, each driven by its own hotkey:
 
@@ -76,7 +96,7 @@ The overlay reports three lines so you can tell these apart:
 
 ## Runtime controls (hotkeys & overlay)
 
-All bound under **Hotkeys**:
+All bound under **Hotkeys** (Movement/Fighting Toggle apply in Follow mode; the Precision keys apply in both — in Navigator mode they are the fight keys):
 
 | Control | Effect |
 |---|---|
@@ -97,10 +117,13 @@ It runs on the *same* pathfinding the follow logic uses (A* over the walkable gr
 
 **Using it**
 
+The window only exists in **Navigator mode** (set **Mode** to Navigator).
+
 1. Bind **Navigation > Target Navigator Toggle Key** (or tick **Show Target Navigator**).
-2. Press **Go** on a target. Navigation is a manual override: while a destination is set it takes priority over following the leader, and it keeps the plugin ticking even with the movement and fighting toggles off.
-3. It stops on arrival, on **Stop**, if no walkable path exists, on timeout, or when you change area.
-4. Bind **Stop Navigation Key** / **Resume Navigation Key** to interrupt and pick the same target back up without opening the window — handy for taking manual control through a fight, then carrying on. The buttons show their bound key, and the header shows which target Resume would take.
+2. **Click a target's name** to select it, or press **Go** to select it and start walking at once. The header shows what's selected.
+3. Bind **Navigation > Move Key** and pick its behaviour: **Toggle** (press to walk to the selected target, press again to stop) or **Hold** (walk only while the key is down; releasing stops, and the target stays selected).
+4. **Fight** by holding the **Precision Key** (or toggling **Precision Toggle Key**) — otherwise the character moves. With an enemy in range it stops and fights while the key is held, and carries on walking when you let go or nothing is left to hit.
+5. It stops on arrival, on release (Hold), on **Stop**, if no walkable path exists, on timeout, or when you change area. **Stop Navigation Key** / **Resume Navigation Key** still work alongside the Move Key.
 
 Following and navigating share the pathfinder but use it differently. **Following** chases a moving leader who is normally close: a cheap, budgeted search that reruns as they move. **Navigating** walks to a point that never moves: one whole-zone search up front (expect a brief hitch on Go for a far target), the complete route cached, and a replan only if you get knocked or teleported off it. That's what makes a long, winding route work — a budgeted search ends in whichever dead end happens to be nearest the target in a straight line.
 
@@ -214,7 +237,8 @@ Use this to share profiles or back them up.
 | Setting | Default | Description |
 |---|---|---|
 | **Enable** | off | Master on/off for the whole plugin. |
-| **Leader Name** | — | Exact in-game name of the character to follow. Required for everything. |
+| **Mode** | Follow | **Follow** or **Navigator** — see [Modes](#modes-follow-and-navigator). Only one runs at a time. |
+| **Leader Name** | — | Follow mode only: exact in-game name of the character to follow. |
 
 ### Hotkeys
 
@@ -285,8 +309,10 @@ Settings for the [target navigator](#target-navigator-walk-to-a-radar-target).
 |---|---|---|
 | **Show Target Navigator** | off | Show the overlay window listing this area's Radar targets. |
 | **Target Navigator Toggle Key** | none | Shows/hides that window. |
-| **Stop Navigation Key** | none | Stops walking to the current target. The target is remembered. |
-| **Resume Navigation Key** | none | Walks to the last picked target again, replanning from where you're standing. |
+| **Move Key** | none | Navigator mode: walks to the selected target (the last one clicked). Behaviour set by Move Key Behavior. |
+| **Move Key Behavior** | Toggle | **Toggle**: press to start, press to stop. **Hold**: walks only while held. |
+| **Stop Navigation Key** | none | Stops walking to the current target. The target stays selected. |
+| **Resume Navigation Key** | none | Walks to the selected target again, replanning from where you're standing. |
 | **Arrival Distance** | 60 | Stop this close (world units) to the chosen target — targets sit on a tile cluster's center, which you often can't stand exactly on. |
 | **Navigation Timeout (s)** | 180 | Give up on a destination after this long. `0` = never give up. |
 | **Radar targets.json Path** | blank | Blank auto-detects it under `Plugins/Temp/Radar`, then `Plugins/Compiled/Radar`, then `Plugins/Source/Radar`. Set it only if your Radar install lives elsewhere. |

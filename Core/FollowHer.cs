@@ -41,6 +41,14 @@ namespace FollowHer
         /// published here so the navigator window (drawn from Render) can reach it.</summary>
         public NavigationManager Navigation { get; internal set; }
 
+        // The mode the running state was last reset for, so a change in the setting is noticed and
+        // the other mode's activity is stopped rather than left running underneath the new one.
+        private PluginMode _appliedMode = PluginMode.Follow;
+        private bool _moveKeyWasHeld;
+
+        public PluginMode CurrentMode => Settings.CurrentMode;
+
+        // Follow mode: following is switched on. Navigator mode: a destination is being walked to.
         public bool MovementEnabled { get; private set; }
         public bool FightingEnabled { get; private set; }
         // Fighting actually permitted this tick (master switch AND the combat gate, or a manual
@@ -64,6 +72,24 @@ namespace FollowHer
                 Input.RegisterKey(Settings.Navigation.ToggleWindowKey);
                 Input.RegisterKey(Settings.Navigation.StopKey);
                 Input.RegisterKey(Settings.Navigation.ResumeKey);
+                Input.RegisterKey(Settings.Navigation.MoveKey);
+
+                Settings.Mode.SetListValues(new List<string>
+                    { FollowHerSettings.FollowModeName, FollowHerSettings.NavigatorModeName });
+                if (!Settings.Mode.Values.Contains(Settings.Mode.Value)) Settings.Mode.Value = FollowHerSettings.FollowModeName;
+
+                Settings.Navigation.MoveKeyBehavior.SetListValues(new List<string>
+                    { NavigationSettings.MoveToggleName, NavigationSettings.MoveHoldName });
+                if (!Settings.Navigation.MoveKeyBehavior.Values.Contains(Settings.Navigation.MoveKeyBehavior.Value))
+                {
+                    Settings.Navigation.MoveKeyBehavior.Value = NavigationSettings.MoveToggleName;
+                }
+
+                Settings.Navigation.MoveKey.OnValueChanged += () =>
+                {
+                    Input.RegisterKey(Settings.Navigation.MoveKey);
+                    _moveKeyWasHeld = false;
+                };
 
                 Settings.Navigation.ToggleWindowKey.OnValueChanged += () =>
                     Input.RegisterKey(Settings.Navigation.ToggleWindowKey);
@@ -146,9 +172,13 @@ namespace FollowHer
                 TryAcceptLeaderInvite();
                 TryLevelUpGems();
 
-                // Also before it: dying mid-route is exactly when you want to call navigation off,
-                // and it would otherwise resume walking to the target the moment you resurrected.
-                HandleNavigationHotkeys();
+                var mode = Settings.CurrentMode;
+                if (mode != _appliedMode) ApplyModeChange(mode);
+
+                // Also before the alive check: dying mid-route is exactly when you want to call
+                // navigation off, and it would otherwise resume walking to the target the moment you
+                // resurrected. Navigator mode only - in Follow mode these keys do nothing.
+                HandleNavigationHotkeys(mode);
 
                 if (GameController.Player?.IsAlive == false)
                 {
@@ -156,79 +186,93 @@ namespace FollowHer
                     return null;
                 }
 
+                // Shared by both modes: the Precision key (hold) and Precision Toggle force attacking.
+                // In Follow mode it overrides the leader gate; in Navigator mode it IS the fight key.
                 if (Settings.Hotkeys.PrecisionToggleKey.PressedOnce())
                 {
                     _isToggled = !_isToggled;
                 }
-                if (Settings.Hotkeys.MovementToggleKey.PressedOnce())
-                {
-                    _movementToggled = !_movementToggled;
-                }
-                if (Settings.Hotkeys.FightingToggleKey.PressedOnce())
-                {
-                    _fightingToggled = !_fightingToggled;
-                }
-                if (Settings.Navigation.ToggleWindowKey.PressedOnce())
-                {
-                    Settings.Navigation.ShowWindow.Value = !Settings.Navigation.ShowWindow.Value;
-                }
-                // Fighting is a master switch (this hotkey) AND-ed with the combat conditions
-                // below - enabling it never forces an attack on its own, it just permits one when
-                // everything else agrees. This is the fix for "always attacking even if the leader
-                // isn't": _fightingToggled used to be OR'd straight into combatActive, bypassing
-                // every gate.
-                var fightingEnabled = _fightingToggled;
 
-                // The gate that decides whether attacking is *warranted* right now, independent of
-                // whether fighting is enabled. When "Attack When Leader Is Attacking" is on, that
-                // means the leader must actually be attacking and be within range of us. When off,
-                // there's no leader-based restriction and the gate is always open (the routine's
-                // own targeting range still applies downstream).
-                var attackGateOpen = true;
-                if (Settings.Combat.AttackWhenLeaderIsAttacking)
-                {
-                    attackGateOpen = false;
-                    var leaderEntity = LeaderLocator.FindLeaderEntity(GameController, Settings.LeaderName.Value);
-
-                    var actorComponent = leaderEntity?.GetComponent<Actor>();
-                    if (actorComponent != null && leaderEntity.DistancePlayer < Settings.Combat.DistanceToLeaderToAttack)
-                    {
-                        // Every skill the leader uses counts as attacking unless it's blacklisted -
-                        // see LeaderAttackDetector for why this is inverted from the old animation list.
-                        var leaderIsAttackingNow = LeaderAttackDetector.IsAttacking(
-                            actorComponent, Settings.Combat.LeaderSkillBlacklistEntries);
-
-                        if (leaderIsAttackingNow)
-                        {
-                            _lastLeaderAttackDetectedAt = DateTime.Now;
-                        }
-
-                        // Keep attacking for a short grace period after the leader was last seen
-                        // attacking, rather than requiring isAttacking to read true on this exact
-                        // tick - smooths over the windup/recovery gaps between individual swings.
-                        var gracePeriodMs = Settings.Combat.AttackGracePeriod.Value;
-                        attackGateOpen = DateTime.Now - _lastLeaderAttackDetectedAt <= TimeSpan.FromMilliseconds(gracePeriodMs);
-                    }
-                }
-
-                // Precision key is a manual override: hold PrecisionKey (or toggle it on) to force
-                // fighting regardless of both the master switch and the leader gate.
                 var forceAttack = _isToggled || Input.GetKeyState(Settings.Hotkeys.PrecisionKey);
 
-                var combatActive = forceAttack || (fightingEnabled && attackGateOpen);
+                bool fightingEnabled, combatActive, movementActive, navigationActive;
 
-                // Movement follows a single runtime state: the hotkey flips _movementToggled, which
-                // is seeded from (and kept in sync with) Movement > Enable. It must NOT be OR'd with
-                // Enable here, or the hotkey could never turn following off while Enable is checked.
-                var movementActive = _movementToggled;
+                if (mode == PluginMode.Navigator)
+                {
+                    // Fighting is purely the key: held (or toggled) = attack, otherwise = move. There's
+                    // no leader, so none of the leader gate applies. With a target in range the combat
+                    // routine stops the character to fight, and walking resumes when the key is
+                    // released or nothing is left to hit.
+                    fightingEnabled = forceAttack;
+                    combatActive = forceAttack;
+                    movementActive = false;
 
-                // Manual navigation has to keep the routine ticking even with following and fighting
-                // both off - otherwise pressing Go in the navigator would set a destination that
-                // nothing ever drives.
-                var navigationActive = Navigation?.IsActive == true;
+                    // Walking to a destination has to keep the routine ticking with the fight key up -
+                    // otherwise nothing would ever drive the movement.
+                    navigationActive = Navigation?.IsActive == true;
+                }
+                else
+                {
+                    if (Settings.Hotkeys.MovementToggleKey.PressedOnce())
+                    {
+                        _movementToggled = !_movementToggled;
+                    }
+                    if (Settings.Hotkeys.FightingToggleKey.PressedOnce())
+                    {
+                        _fightingToggled = !_fightingToggled;
+                    }
+
+                    // Fighting is a master switch (this hotkey) AND-ed with the combat conditions
+                    // below - enabling it never forces an attack on its own, it just permits one when
+                    // everything else agrees. This is the fix for "always attacking even if the leader
+                    // isn't": _fightingToggled used to be OR'd straight into combatActive, bypassing
+                    // every gate.
+                    fightingEnabled = _fightingToggled;
+
+                    // The gate that decides whether attacking is *warranted* right now, independent of
+                    // whether fighting is enabled. When "Attack When Leader Is Attacking" is on, that
+                    // means the leader must actually be attacking and be within range of us. When off,
+                    // there's no leader-based restriction and the gate is always open (the routine's
+                    // own targeting range still applies downstream).
+                    var attackGateOpen = true;
+                    if (Settings.Combat.AttackWhenLeaderIsAttacking)
+                    {
+                        attackGateOpen = false;
+                        var leaderEntity = LeaderLocator.FindLeaderEntity(GameController, Settings.LeaderName.Value);
+
+                        var actorComponent = leaderEntity?.GetComponent<Actor>();
+                        if (actorComponent != null && leaderEntity.DistancePlayer < Settings.Combat.DistanceToLeaderToAttack)
+                        {
+                            // Every skill the leader uses counts as attacking unless it's blacklisted -
+                            // see LeaderAttackDetector for why this is inverted from the old animation list.
+                            var leaderIsAttackingNow = LeaderAttackDetector.IsAttacking(
+                                actorComponent, Settings.Combat.LeaderSkillBlacklistEntries);
+
+                            if (leaderIsAttackingNow)
+                            {
+                                _lastLeaderAttackDetectedAt = DateTime.Now;
+                            }
+
+                            // Keep attacking for a short grace period after the leader was last seen
+                            // attacking, rather than requiring isAttacking to read true on this exact
+                            // tick - smooths over the windup/recovery gaps between individual swings.
+                            var gracePeriodMs = Settings.Combat.AttackGracePeriod.Value;
+                            attackGateOpen = DateTime.Now - _lastLeaderAttackDetectedAt <= TimeSpan.FromMilliseconds(gracePeriodMs);
+                        }
+                    }
+
+                    combatActive = forceAttack || (fightingEnabled && attackGateOpen);
+
+                    // Movement follows a single runtime state: the hotkey flips _movementToggled, which
+                    // is seeded from (and kept in sync with) Movement > Enable. It must NOT be OR'd with
+                    // Enable here, or the hotkey could never turn following off while Enable is checked.
+                    movementActive = _movementToggled;
+                    navigationActive = false;
+                }
+
                 var isActive = combatActive || movementActive || navigationActive;
 
-                MovementEnabled = movementActive;
+                MovementEnabled = mode == PluginMode.Navigator ? navigationActive : movementActive;
                 // Reflects the master fighting switch, so the overlay tells you whether your hotkey
                 // took effect. Whether it's actually swinging this tick is FightingActive below.
                 FightingEnabled = fightingEnabled;
@@ -276,17 +320,69 @@ namespace FollowHer
         // ticks, so a press takes effect on the same frame instead of the next one. PressedOnce()
         // consumes the key's edge, so it must be evaluated before any condition that could
         // short-circuit it away.
-        private void HandleNavigationHotkeys()
+        private void HandleNavigationHotkeys(PluginMode mode)
         {
-            if (Settings.Navigation.StopKey.PressedOnce() && Navigation is { IsActive: true })
+            if (mode != PluginMode.Navigator)
+            {
+                _moveKeyWasHeld = false;
+                return;
+            }
+
+            var navigation = Settings.Navigation;
+
+            if (navigation.ToggleWindowKey.PressedOnce())
+            {
+                navigation.ShowWindow.Value = !navigation.ShowWindow.Value;
+            }
+
+            if (navigation.StopKey.PressedOnce() && Navigation is { IsActive: true })
             {
                 Navigation.Stop("stopped by hotkey");
             }
 
-            if (Settings.Navigation.ResumeKey.PressedOnce())
+            if (navigation.ResumeKey.PressedOnce())
             {
                 Navigation?.Resume();
             }
+
+            // The Move Key walks to the target last clicked in the navigator window.
+            if (navigation.MoveKeyIsHold)
+            {
+                // Hold: walking lasts exactly as long as the key does. Only the press and release
+                // *edges* act, so a walk started from the window's button isn't cut short by the key
+                // simply not being held, and arriving doesn't restart it while the key stays down.
+                var held = navigation.MoveKey.Value != Keys.None && Input.GetKeyState(navigation.MoveKey.Value);
+
+                if (held && !_moveKeyWasHeld && Navigation is { IsActive: false })
+                {
+                    Navigation.Resume();
+                }
+                else if (!held && _moveKeyWasHeld && Navigation is { IsActive: true })
+                {
+                    Navigation.Stop("stopped - move key released");
+                }
+
+                _moveKeyWasHeld = held;
+            }
+            else if (navigation.MoveKey.PressedOnce() && Navigation != null)
+            {
+                if (Navigation.IsActive) Navigation.Stop("stopped by move key");
+                else Navigation.Resume();
+            }
+        }
+
+        // Switching modes hands the character over cleanly: whatever the old mode was doing stops, and
+        // its transient state is dropped, so nothing carries on underneath the new one (a navigator
+        // walk continuing into Follow mode, or a fight toggle left on).
+        private void ApplyModeChange(PluginMode mode)
+        {
+            _appliedMode = mode;
+            _isToggled = false;
+            _fightingToggled = false;
+            _moveKeyWasHeld = false;
+
+            Navigation?.Stop($"mode changed to {mode}");
+            _activeRoutine?.Stop();
         }
 
         // Always resurrect at the checkpoint rather than in town - independent of the

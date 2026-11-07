@@ -14,9 +14,31 @@ using Newtonsoft.Json;
 
 namespace FollowHer.Settings;
 
+/// <summary>The two ways the plugin runs. Exactly one is active at a time; switching stops whatever
+/// the other was doing.</summary>
+public enum PluginMode
+{
+    /// <summary>Follow a leader character, and fight when they fight.</summary>
+    Follow,
+
+    /// <summary>Walk to a target picked in the navigator window, and fight while the fight key is held.</summary>
+    Navigator,
+}
+
 public class FollowHerSettings : ISettings
 {
+    public const string FollowModeName = "Follow";
+    public const string NavigatorModeName = "Navigator";
+
     public ToggleNode Enable { get; set; } = new(false);
+
+    [Menu("Mode", "Follow: follows the character named below and fights when they fight. Navigator: walks to a target picked in the Target Navigator window - holds Move Key to walk (or toggles it) and fights while the Precision key is held. Only one mode runs at a time; switching stops the other.")]
+    public ListNode Mode { get; set; } = new() { Value = FollowModeName };
+
+    [JsonIgnore]
+    public PluginMode CurrentMode => Mode.Value == NavigatorModeName ? PluginMode.Navigator : PluginMode.Follow;
+
+    [Menu("Leader Name", "Follow mode only: the exact in-game name of the character to follow")]
     public TextNode LeaderName { get; set; } = new("");
 
     public HotkeySettings Hotkeys { get; set; } = new();
@@ -173,6 +195,18 @@ public class NavigationSettings
 
     [Menu("Target Navigator Toggle Key", "Shows/hides the target navigator window")]
     public HotkeyNode ToggleWindowKey { get; set; } = new(Keys.None);
+
+    [Menu("Move Key", "Navigator mode: walks to the target last clicked in the navigator window. How it behaves is set by Move Key Behavior. Fighting is separate - hold the Precision key (Hotkeys) to attack; when it isn't held the character moves.")]
+    public HotkeyNode MoveKey { get; set; } = new(Keys.None);
+
+    public const string MoveToggleName = "Toggle";
+    public const string MoveHoldName = "Hold";
+
+    [Menu("Move Key Behavior", "Toggle: press once to start walking to the selected target, press again to stop. Hold: walk only while the key is held; releasing stops (the target stays selected).")]
+    public ListNode MoveKeyBehavior { get; set; } = new() { Value = MoveToggleName };
+
+    [JsonIgnore]
+    public bool MoveKeyIsHold => MoveKeyBehavior.Value == MoveHoldName;
 
     [Menu("Stop Navigation Key", "Stops walking to the current target. The target is remembered, so Resume picks it back up.")]
     public HotkeyNode StopKey { get; set; } = new(Keys.None);

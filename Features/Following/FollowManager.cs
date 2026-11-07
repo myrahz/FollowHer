@@ -110,16 +110,21 @@ public class FollowManager
     {
         var settings = FollowHer.Instance.Settings.Movement;
 
-        // Manual navigation is a deliberate override: while a destination is set it owns movement,
-        // whether or not following is toggled on (and whether or not a leader is even configured).
-        try
+        // Navigator mode owns movement entirely: it walks to its destination and does nothing else -
+        // in particular it never falls through to following a leader, whatever the leader settings say.
+        if (FollowHer.Instance.CurrentMode == PluginMode.Navigator)
         {
-            if (Navigation.Update()) return true;
-        }
-        catch (Exception ex)
-        {
-            DebugWindow.LogError($"[FollowManager] Error during navigation: {ex.Message}");
-            Navigation.Stop($"error: {ex.Message}");
+            try
+            {
+                if (Navigation.Update()) return true;
+            }
+            catch (Exception ex)
+            {
+                DebugWindow.LogError($"[FollowManager] Error during navigation: {ex.Message}");
+                Navigation.Stop($"error: {ex.Message}");
+            }
+
+            return NotFollowing("navigator mode - no destination");
         }
 
         // Gate on the live movement state (the hotkey-controlled toggle), not the raw Enable

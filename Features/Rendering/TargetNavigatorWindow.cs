@@ -7,6 +7,7 @@ using ExileCore;
 using ExileCore.Shared.Nodes;
 using FollowHer.Features.Following.Pathfinding;
 using FollowHer.Features.Navigation;
+using FollowHer.Settings;
 using ImGuiNET;
 
 namespace FollowHer.Features.Rendering;
@@ -34,6 +35,9 @@ public class TargetNavigatorWindow
         var settings = FollowHer.Instance.Settings.Navigation;
         if (!settings.ShowWindow) return;
         if (gameController?.Player == null) return;
+
+        // Navigator mode only: in Follow mode there is nothing for this window to drive.
+        if (FollowHer.Instance.CurrentMode != PluginMode.Navigator) return;
 
         var navigation = FollowHer.Instance.Navigation;
 
@@ -77,7 +81,7 @@ public class TargetNavigatorWindow
 
         ImGui.SameLine();
         ImGui.BeginDisabled(navigation is not { CanResume: true, IsActive: false });
-        if (ImGui.Button($"Resume{HotkeySuffix(settings.ResumeKey)}")) navigation?.Resume();
+        if (ImGui.Button($"Walk to selected{HotkeySuffix(settings.MoveKey)}")) navigation?.Resume();
         ImGui.EndDisabled();
 
         ImGui.TextColored(_source.IsRadarConnected ? OkColor : WarnColor, _source.Status);
@@ -91,10 +95,15 @@ public class TargetNavigatorWindow
         var statusColor = navigation.IsActive ? OkColor : MutedColor;
         ImGui.TextColored(statusColor, $"Status: {navigation.Status}");
 
-        if (!navigation.IsActive && navigation.LastTarget is { } last)
-        {
-            ImGui.TextColored(MutedColor, $"Resumes: {last.Label}");
-        }
+        // What the Move Key will walk to, and how it behaves - so the key's effect is never a guess.
+        var selected = navigation.LastTarget?.Label ?? "none - click a target below";
+        var behavior = settings.MoveKeyIsHold ? "hold" : "toggle";
+        var moveKey = settings.MoveKey.Value == Keys.None ? "unbound" : settings.MoveKey.Value.ToString();
+        ImGui.TextColored(MutedColor, $"Selected: {selected}   |   Move Key: {moveKey} ({behavior})");
+
+        var fightKey = FollowHer.Instance.Settings.Hotkeys.PrecisionKey.Value;
+        ImGui.TextColored(MutedColor,
+            $"Fight: hold {(fightKey == Keys.None ? "Precision Key (unbound)" : fightKey.ToString())} - otherwise it moves");
 
         if (!FollowHer.Instance.Settings.Enable)
         {
@@ -117,6 +126,7 @@ public class TargetNavigatorWindow
         }
 
         var activeLabel = navigation?.ActiveTarget?.Label;
+        var selectedLabel = navigation?.LastTarget?.Label;
 
         if (ImGui.BeginChild("##navtargets", new Vector2(0, 0), ImGuiChildFlags.None))
         {
@@ -132,7 +142,15 @@ public class TargetNavigatorWindow
                 var isActive = activeLabel != null && activeLabel == target.Label;
                 ImGui.TextColored(isActive ? OkColor : MutedColor, $"{distance,6:F0}");
                 ImGui.SameLine();
-                ImGui.TextUnformatted(target.Label);
+
+                // Clicking the name selects it for the Move Key without starting a walk; Go selects
+                // it and starts walking straight away.
+                ImGui.PushID(i);
+                if (ImGui.Selectable(target.Label, selectedLabel != null && selectedLabel == target.Label))
+                {
+                    navigation?.Select(target);
+                }
+                ImGui.PopID();
 
                 if (ImGui.IsItemHovered())
                 {
