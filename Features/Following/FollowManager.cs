@@ -932,10 +932,27 @@ public class FollowManager
 
         // A caller-chosen skill (e.g. the direct-dash shortcut) bypasses the normal per-target
         // skill selection - the decision to use it, and which one, has already been made.
-        var movementSkill = forcedSkill
-            ?? (targetGridPosition.HasValue
-                ? TryGetMovementSkill(_gameController.Player.GridPosNum, targetGridPosition.Value)
-                : null);
+        var movementSkill = forcedSkill;
+        var aimWorld = targetWorldPosition;
+
+        if (movementSkill == null && targetGridPosition.HasValue)
+        {
+            var choice = TryGetMovementSkill(_gameController.Player.GridPosNum, targetGridPosition.Value);
+            if (choice is { } picked)
+            {
+                movementSkill = picked.Skill;
+
+                // The skill only covers its hop, so aim that far ahead along the line to the target
+                // rather than all the way at it.
+                if (picked.AimFraction < 1f)
+                {
+                    var playerWorld = _gameController.Player.PosNum;
+                    aimWorld = playerWorld + (targetWorldPosition - playerWorld) * picked.AimFraction;
+                    var aimScreen = _gameController.IngameState.Camera.WorldToScreen(aimWorld);
+                    if (aimScreen != Vector2.Zero) screenPos = aimScreen;
+                }
+            }
+        }
 
         using (ExileCore.Input.InputManager.BlockUserMouseInput())
         {
@@ -945,7 +962,7 @@ public class FollowManager
 
         if (movementSkill != null)
         {
-            LogDebug($"Using movement skill '{movementSkill.Name}' toward {targetWorldPosition}");
+            LogDebug($"Using movement skill '{movementSkill.Name}' toward {aimWorld}");
         }
 
         var inputFrequency = FollowHer.Instance.Settings.Movement.InputFrequency.Value;
@@ -1080,7 +1097,11 @@ public class FollowManager
         return true;
     }
 
-    private ActiveSkill TryGetMovementSkill(Vector2 playerGrid, Vector2 targetGrid)
+    /// <summary>A movement skill chosen for a step, and how far along the line to the step's target to
+    /// aim it: 1 = at the target, less = a point that far along (its hop distance).</summary>
+    private readonly record struct MovementChoice(ActiveSkill Skill, float AimFraction);
+
+    private MovementChoice? TryGetMovementSkill(Vector2 playerGrid, Vector2 targetGrid)
     {
         var settings = FollowHer.Instance.Settings.Movement;
         if (!settings.DashEnabled && !settings.PreferMovementSkillsForTravel) return null;
@@ -1089,12 +1110,6 @@ public class FollowManager
         // Compared in world units (like every other distance setting in this plugin), not grid
         // units, so it's directly comparable to what you see in-game rather than a hidden scale.
         var worldDistance = Vector2.Distance(playerGrid, targetGrid) * GridToWorldMultiplier;
-        if (worldDistance < settings.MovementSkillMinDistance || worldDistance > settings.MovementSkillMaxDistance)
-        {
-            LogDebug($"Movement skill: distance {worldDistance:F0} outside [{settings.MovementSkillMinDistance},{settings.MovementSkillMaxDistance}] - skipped");
-            return null;
-        }
-
         var hasClearLineOfSight = HasClearLineOfSight(playerGrid, targetGrid);
 
         // Blink is for crossing something you can't walk through but CAN see across (a gap/chasm):
@@ -1102,10 +1117,16 @@ public class FollowManager
         // trying to blink into a wall/corner (walkable AND targeting both blocked).
         if (settings.DashEnabled && !hasClearLineOfSight && HasTargetingLineOfSight(playerGrid, targetGrid))
         {
+            if (worldDistance < settings.MovementSkillMinDistance || worldDistance > settings.MovementSkillMaxDistance)
+            {
+                LogDebug($"Movement skill: blink distance {worldDistance:F0} outside [{settings.MovementSkillMinDistance},{settings.MovementSkillMaxDistance}] - skipped");
+                return null;
+            }
+
             var blinkSkill = FollowHer.Instance.Settings.Movement.MovementSkills.Content
                 .FirstOrDefault(s => s.Enabled && s.Name != MoveSkillName && s.TravelsThroughObstacles &&
                                       _skillMonitor.CanUseSkill(s));
-            if (blinkSkill != null) return blinkSkill;
+            if (blinkSkill != null) return new MovementChoice(blinkSkill, 1f);
             LogDebug("Movement skill: DashEnabled path (walkable blocked, target visible) found no enabled/off-cooldown blink-type skill");
         }
 
@@ -1116,21 +1137,41 @@ public class FollowManager
             // GridPathfinder/HasCorridorClearance also blocks on 5, "Special" tiles), so requiring
             // both could silently reject a corridor the clearance check would otherwise approve.
             var grid = _lineOfSight.GetGridReference(LineOfSightDataType.Walkable);
+            var dashSkill = FollowHer.Instance.Settings.Movement.MovementSkills.Content
+                .FirstOrDefault(s => s.Enabled && s.Name != MoveSkillName && !s.TravelsThroughObstacles &&
+                                      _skillMonitor.CanUseSkill(s));
+
             if (grid == null)
             {
                 LogDebug("Movement skill: no terrain grid available yet - skipped");
             }
-            else if (!GridPathfinder.HasCorridorClearance(grid, playerGrid, targetGrid, settings.MovementSkillClearanceMargin, out var failureReason))
+            else if (dashSkill == null)
             {
-                LogDebug($"Movement skill: corridor clearance check failed ({failureReason}); player grid ({playerGrid.X:F1},{playerGrid.Y:F1}) -> target grid ({targetGrid.X:F1},{targetGrid.Y:F1}), margin={settings.MovementSkillClearanceMargin}");
+                LogDebug("Movement skill: no enabled/off-cooldown ground-dash skill found");
             }
             else
             {
-                var dashSkill = FollowHer.Instance.Settings.Movement.MovementSkills.Content
-                    .FirstOrDefault(s => s.Enabled && s.Name != MoveSkillName && !s.TravelsThroughObstacles &&
-                                          _skillMonitor.CanUseSkill(s));
-                if (dashSkill != null) return dashSkill;
-                LogDebug("Movement skill: corridor clear but no enabled/off-cooldown ground-dash skill found");
+                // A skill with a known hop only covers that much of the way to the target, so what has
+                // to be clear - and what the distance limits apply to - is the hop, not the whole
+                // distance to a waypoint that is usually several hops off. Without this a bend 300
+                // units ahead vetoed a 100-unit leap.
+                var hop = dashSkill.EffectiveHopDistance;
+                var aimFraction = hop > 0 && worldDistance > hop ? hop / worldDistance : 1f;
+                var hopWorld = worldDistance * aimFraction;
+                var aimGrid = playerGrid + (targetGrid - playerGrid) * aimFraction;
+
+                if (hopWorld < settings.MovementSkillMinDistance || hopWorld > settings.MovementSkillMaxDistance)
+                {
+                    LogDebug($"Movement skill: hop {hopWorld:F0} outside [{settings.MovementSkillMinDistance},{settings.MovementSkillMaxDistance}] - skipped");
+                }
+                else if (!GridPathfinder.HasCorridorClearance(grid, playerGrid, aimGrid, settings.MovementSkillClearanceMargin, out var failureReason))
+                {
+                    LogDebug($"Movement skill: corridor clearance check failed ({failureReason}); player grid ({playerGrid.X:F1},{playerGrid.Y:F1}) -> hop end ({aimGrid.X:F1},{aimGrid.Y:F1}), margin={settings.MovementSkillClearanceMargin}");
+                }
+                else
+                {
+                    return new MovementChoice(dashSkill, aimFraction);
+                }
             }
         }
 

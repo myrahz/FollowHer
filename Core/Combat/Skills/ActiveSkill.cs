@@ -43,6 +43,14 @@ namespace FollowHer.Core.Combat.Skills
         [Menu("Max Jump Distance", "How far this skill carries you in one use, in world units, measured from where you stand. Pathfinding uses it to look for jumps over gaps and low obstacles (Leap Slam, Flame Dash, Frostblink...). 0 = never plan jumps with this skill. The real range depends on your gems and gear, so set it to what you actually see in game: too low and shortcuts are missed, too high and the character falls short of the landing and gives up on that jump after a few seconds.")]
         public RangeNode<int> MaxJumpDistance { get; set; } = new(0, 0, 2000);
 
+        [Menu("Travel Distance Per Use", "How far one use of this movement skill carries you, in world units (e.g. Leap Slam 100). While walking a path the cursor is aimed this far ahead along it instead of at the next waypoint, so each use covers a full hop, and only that hop has to be clear of obstacles - a bend further along no longer blocks the skill. 0 = use Max Jump Distance, and if that is 0 too, aim at the waypoint as before.")]
+        public RangeNode<int> HopDistance { get; set; } = new(0, 0, 2000);
+
+        /// <summary>The distance one use is expected to cover: the explicit travel distance, else the
+        /// jump range, else unknown (0).</summary>
+        [JsonIgnore]
+        public int EffectiveHopDistance => HopDistance.Value > 0 ? HopDistance.Value : MaxJumpDistance.Value;
+
         // Which generation of per-skill jump defaults has been seeded into this skill. Without it a
         // skill saved before the jump settings existed would stay at 0 forever, and a user who
         // deliberately set 0 would have it overwritten - this tells the two apart. It is a version

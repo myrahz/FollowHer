@@ -132,6 +132,9 @@ public class MovementSettings
     [Menu("Wall Clearance", "How many grid cells the path tries to stay away from walls and obstacles (about 11 world units each). Routes that hug walls leave movement skills no room - ground dashes need a clear corridor. This is a soft preference: a narrower gap is still used when it's the only way through. 0 = plain shortest path.")]
     public RangeNode<int> WallClearance { get; set; } = new(3, 0, 8);
 
+    [Menu("Path Straightness", "How strongly the route prefers long straight runs over bends. Plain shortest paths wiggle - many routes of the same length differ only in how often they turn - and every bend shortens the stretch a movement skill can fly along. Higher = fewer, longer straight segments (and the route will detour a little to avoid a turn); lower = hugs the shortest path and bends freely. 0 = off. Works alongside Wall Clearance: both are soft preferences that the route trades off.")]
+    public RangeNode<int> PathStraightness { get; set; } = new(4, 0, 10);
+
     [Menu("Plan Jumps In Pathfinding", "Let the path use movement skills that jump over gaps and low obstacles (Leap Slam, Flame Dash, Frostblink) as a shortcut when walking around is much longer. Each skill's reach is its Max Jump Distance in the Movement Skills list; a skill with 0 there is never used for this.")]
     public ToggleNode EnableJumpPathing { get; set; } = new(true);
 

@@ -51,6 +51,16 @@ public static class GridPathfinder
         public HashSet<(int x, int y)> BannedLandings;
     }
 
+    /// <summary>Cost units added per 45 degrees of turn, per level of the Path Straightness setting
+    /// (a straight step costs 10, a diagonal 14).</summary>
+    public const int TurnPenaltyPerLevel = 6;
+
+    // The 8 step directions in order round the circle, so the difference of two indices (folded to
+    // 0..4) is how many 45-degree increments separate them. Indexed by (dy + 1) * 3 + (dx + 1).
+    private static readonly int[] DirectionIndexTable = { 5, 6, 7, 4, -1, 0, 3, 2, 1 };
+
+    private static int DirectionIndex(int dx, int dy) => DirectionIndexTable[(dy + 1) * 3 + (dx + 1)];
+
     private const int JumpDirectionCount = 16;
     private const int JumpMinCells = 2;
     private const int JumpTakeoffReach = 2;
@@ -236,13 +246,17 @@ public static class GridPathfinder
     /// <param name="wallClearanceCells">Soft preference for staying this many cells off walls: cells
     /// within it cost extra, scaled by how close they are. 0 = plain shortest path. It never forbids a
     /// cell, so a gap narrower than the margin is still taken when it's the only way.</param>
+    /// <param name="turnPenalty">Extra cost per 45 degrees of change in direction. A straight route and
+    /// a wiggly one of the same length cost the same without it, so the search is free to bend at every
+    /// step; with it, the route holds a heading for as long as it reasonably can. Costs are per cell, so
+    /// 0 = no preference.</param>
     /// <param name="jumps">When set, the search may also jump over obstacles (see
     /// <see cref="JumpOptions"/>). The cells of the returned path that were reached by a jump are
     /// added to <paramref name="jumpLandings"/>; the cell before each one (or the start) is where the
     /// jump is taken from.</param>
     public static List<(int x, int y)> AStar(int[][] grid, (int x, int y) start, (int x, int y) target,
         int maxNodesToExplore, bool allowPartialPath, out bool isPartial, int wallClearanceCells = 0,
-        JumpOptions jumps = null, HashSet<(int x, int y)> jumpLandings = null)
+        JumpOptions jumps = null, HashSet<(int x, int y)> jumpLandings = null, int turnPenalty = 0)
     {
         isPartial = false;
         if (grid == null) return null;
@@ -305,6 +319,23 @@ public static class GridPathfinder
 
             var currentG = _gScore[currentIndex];
 
+            // The direction we arrived in, for the turn penalty. Unknown at the start, and after a jump
+            // (the landing is not adjacent to where it came from), so no turn is charged there.
+            var arrivalDirection = -1;
+            if (turnPenalty > 0)
+            {
+                var parentIndex = _parent[currentIndex];
+                if (parentIndex >= 0)
+                {
+                    var arrivalDx = cx - parentIndex % width;
+                    var arrivalDy = cy - parentIndex / width;
+                    if (Math.Abs(arrivalDx) <= 1 && Math.Abs(arrivalDy) <= 1 && (arrivalDx != 0 || arrivalDy != 0))
+                    {
+                        arrivalDirection = DirectionIndex(arrivalDx, arrivalDy);
+                    }
+                }
+            }
+
             foreach (var n in Neighbors)
             {
                 var nx = cx + n.dx;
@@ -331,6 +362,13 @@ public static class GridPathfinder
                     }
 
                     stepCost += _penalty[neighborIndex];
+                }
+
+                if (arrivalDirection >= 0)
+                {
+                    var turn = Math.Abs(arrivalDirection - DirectionIndex(n.dx, n.dy));
+                    if (turn > 4) turn = 8 - turn;
+                    stepCost += turn * turnPenalty;
                 }
 
                 var tentativeG = currentG + stepCost;

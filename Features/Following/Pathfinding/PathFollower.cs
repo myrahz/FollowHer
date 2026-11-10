@@ -281,6 +281,7 @@ public class PathFollower
                 }
 
                 var wallClearance = FollowHer.Instance.Settings.Movement.WallClearance.Value;
+                var turnPenalty = FollowHer.Instance.Settings.Movement.PathStraightness.Value * GridPathfinder.TurnPenaltyPerLevel;
                 List<(int x, int y)> rawPath;
                 bool isPartial;
 
@@ -291,12 +292,12 @@ public class PathFollower
                     // it only gets replanned when we leave the route (see NeedsPathRecompute). A null
                     // here is authoritative - the target really is cut off.
                     rawPath = GridPathfinder.AStar(grid, start, target, MaxFullSearchNodes,
-                        allowPartialPath: true, out isPartial, wallClearance, jumpOptions, _jumpLandings);
+                        allowPartialPath: true, out isPartial, wallClearance, jumpOptions, _jumpLandings, turnPenalty);
                 }
                 else
                 {
                     rawPath = GridPathfinder.AStar(grid, start, target, MaxPathSearchNodes,
-                        allowPartialPath: true, out isPartial, wallClearance, jumpOptions, _jumpLandings);
+                        allowPartialPath: true, out isPartial, wallClearance, jumpOptions, _jumpLandings, turnPenalty);
 
                     // A leader is normally close, so the cheap search is enough - and it has to be cheap,
                     // because it reruns as they move. But a partial route is only "the explored cell
@@ -308,7 +309,7 @@ public class PathFollower
                     {
                         _nextFullSearchAt = DateTime.Now.AddMilliseconds(MinFullSearchIntervalMs);
                         rawPath = GridPathfinder.AStar(grid, start, target, MaxFullSearchNodes,
-                            allowPartialPath: true, out isPartial, wallClearance, jumpOptions, _jumpLandings);
+                            allowPartialPath: true, out isPartial, wallClearance, jumpOptions, _jumpLandings, turnPenalty);
                     }
                 }
 
