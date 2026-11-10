@@ -429,6 +429,7 @@ Per-skill settings:
 | Setting | What it does |
 |---|---|
 | **Use To Cross Blocked Paths** / **Use For Travel** | The two roles above. They replace the old global *Dash Enabled* and *Prefer Movement Skills For Travel*. |
+| **Always Travels Full Distance** | The skill moves you the whole Travel Distance in the aimed direction however close you click (Frostblink: clicking 1 unit away still carries you the full distance). The cursor then only supplies a direction, jumps are planned only where the landing is exactly one travel distance out and is solid ground all round, and the skill is skipped if the spot it would land on isn't walkable. Leave it off for skills that stop at the cursor (Leap Slam) or refuse to move below a minimum (Shield Charge — that is what **Minimum Distance Per Use** is for). |
 | **Travel Distance Per Use** | How far one use carries you. The cursor is aimed this far ahead; blinks and hops never aim beyond it. |
 | **Minimum Distance Per Use** | Don't use the skill to cover less than this; the character walks instead. Measure it: do the shortest use and compare positions (Shield Charge ≈ 260). |
 | **Hitbox Clearance (cells)** | Radius around the character and along the hop that must be walkable. See [Per-skill hitbox clearance](#per-skill-hitbox-clearance). |

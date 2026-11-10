@@ -993,7 +993,7 @@ public class FollowManager
 
     private IEnumerable<MovementSkill> EnabledMovementSkills() =>
         FollowHer.Instance.Settings.Movement.MovementSkills.Content
-            .Where(s => s.Enabled && s.Name != MoveSkillName);
+            .Where(s => s.Enabled && s.Name != MoveSkillName && s.UsableWithCurrentWeapon);
 
     /// <summary>The distance one use of <paramref name="skill"/> actually covers toward something
     /// <paramref name="distance"/> away: all of it if it is within the skill's reach (or the reach is
@@ -1015,7 +1015,12 @@ public class FollowManager
             .FirstOrDefault(s => s.TravelsThroughObstacles && s.UseToCrossBlockedPaths &&
                                  _skillMonitor.CanUseSkill(s) &&
                                  directWorld >= s.MinDistance.Value &&
-                                 (s.EffectiveHopDistance <= 0 || directWorld <= s.EffectiveHopDistance));
+                                 (s.TravelsFullDistance
+                                     // Goes the whole distance whatever is clicked, so it must not
+                                     // overshoot the leader by much and must land on ground.
+                                     ? directWorld >= s.EffectiveHopDistance - FullDistanceJumpToleranceWorld &&
+                                       LandsOnGround(s, player.GridPosNum, leaderEntity.GridPosNum)
+                                     : s.EffectiveHopDistance <= 0 || directWorld <= s.EffectiveHopDistance));
         if (blinkSkill == null) return null;
 
         // A blink can only go where it can see. Without this it would try to blink straight into a
@@ -1082,9 +1087,55 @@ public class FollowManager
         if (IsInTownOrHideout()) return default;
 
         var skills = ConfiguredJumpSkills();
-        return skills.Count == 0
-            ? default
-            : new JumpCapability(skills.Max(s => s.MaxJumpDistance.Value), skills.Min(s => s.JumpPathCost.Value));
+        if (skills.Count == 0) return default;
+
+        // When nothing can make a short jump, the planner may only offer landings exactly one travel
+        // distance out. With any variable skill in the set, ranges stay "up to"; a fixed-distance skill
+        // is then checked for a safe landing at the moment of use instead.
+        var fixedWorld = skills.All(s => s.TravelsFullDistance) ? skills.Max(s => s.EffectiveHopDistance) : 0;
+        return new JumpCapability(skills.Max(s => s.MaxJumpDistance.Value), skills.Min(s => s.JumpPathCost.Value), fixedWorld);
+    }
+
+    // Slack when matching a jump to a full-distance skill: the character stops within the takeoff
+    // tolerance of the takeoff cell, so the landing is that far from exactly one travel distance away.
+    private const float FullDistanceJumpToleranceWorld = 90f;
+
+    private static float JumpReachWorld(MovementSkill skill) =>
+        skill.TravelsFullDistance ? skill.EffectiveHopDistance + FullDistanceJumpToleranceWorld : skill.MaxJumpDistance.Value;
+
+    /// <summary>Whether <paramref name="skill"/> can make a jump to a landing <paramref name="distance"/>
+    /// away. A skill that stops at the cursor just has to reach; one that always travels its full distance
+    /// has to be about one travel distance away, or it carries the character past the landing.</summary>
+    private static bool JumpFitsFrom(MovementSkill skill, float distance) =>
+        skill.TravelsFullDistance
+            ? Math.Abs(distance - skill.EffectiveHopDistance) <= FullDistanceJumpToleranceWorld
+            : skill.MaxJumpDistance.Value >= distance;
+
+    /// <summary>For a skill that always travels its full distance: whether the spot it would land on,
+    /// one travel distance from the character toward <paramref name="targetGrid"/>, is solid ground the
+    /// skill can see. Skills that stop at the cursor are always fine.</summary>
+    private bool LandsOnGround(MovementSkill skill, Vector2 playerGrid, Vector2 targetGrid)
+    {
+        if (!skill.TravelsFullDistance) return true;
+
+        var grid = _lineOfSight.GetGridReference(LineOfSightDataType.Walkable);
+        if (grid == null) return false;
+
+        var direction = targetGrid - playerGrid;
+        if (direction.LengthSquared() < 0.0001f) return false;
+
+        var end = playerGrid + Vector2.Normalize(direction) * (skill.EffectiveHopDistance / GridToWorldMultiplier);
+        var endX = (int)Math.Round(end.X);
+        var endY = (int)Math.Round(end.Y);
+        for (var oy = -1; oy <= 1; oy++)
+        {
+            for (var ox = -1; ox <= 1; ox++)
+            {
+                if (!GridPathfinder.IsCellWalkable(grid, endX + ox, endY + oy)) return false;
+            }
+        }
+
+        return HasTargetingLineOfSight(playerGrid, end);
     }
 
     /// <summary>Takes a planned jump: aims the shortest-range usable skill that reaches the landing
@@ -1098,7 +1149,7 @@ public class FollowManager
 
         var distance = Vector3.Distance(player.PosNum, step.World);
         var ready = UsableJumpSkills();
-        var skill = ready.FirstOrDefault(s => s.MaxJumpDistance.Value >= distance);
+        var skill = ready.FirstOrDefault(s => JumpFitsFrom(s, distance));
         if (skill == null)
         {
             // Skills are ready but the landing is out of their reach - the character stopped a little
@@ -1106,8 +1157,17 @@ public class FollowManager
             // and the give-up timer only starts after a cast), so step closer.
             if (ready.Count > 0)
             {
-                LogDebug($"Jump: ready skills reach at most {ready.Max(s => s.MaxJumpDistance.Value)} but the landing is {distance:F0} away - closing in");
-                return ExecuteMovement(step.World, step.Grid);
+                // Out of reach: step closer. A full-distance skill that is ready but would carry us well
+                // past the landing from here is no use either - give the jump up and walk.
+                if (ready.Any(s => distance > JumpReachWorld(s)))
+                {
+                    LogDebug($"Jump: ready skills reach at most {ready.Max(JumpReachWorld):F0} but the landing is {distance:F0} away - closing in");
+                    return ExecuteMovement(step.World, step.Grid);
+                }
+
+                LogDebug($"Jump: the ready skills would carry the character far past the landing ({distance:F0} units away) - replanning on foot");
+                follower.ReportJumpUnavailable(0);
+                return false;
             }
 
             // Nothing is ready: a cooldown, or no jump skill is set up any more. Wait the skills' own
@@ -1157,6 +1217,20 @@ public class FollowManager
         {
             foreach (var blinkSkill in blinkSkills.Where(s => _skillMonitor.CanUseSkill(s)))
             {
+                if (blinkSkill.TravelsFullDistance)
+                {
+                    // Lands exactly one travel distance out whatever is clicked, so what matters is
+                    // that spot, not the waypoint; the cursor only supplies the direction.
+                    if (!LandsOnGround(blinkSkill, playerGrid, targetGrid))
+                    {
+                        LogDebug($"Movement skill '{blinkSkill.Name}': the full-distance blink would not land on solid ground in that direction - skipped");
+                        continue;
+                    }
+
+                    if (blinkSkill.EffectiveHopDistance < blinkSkill.MinDistance.Value) continue;
+                    return new MovementChoice(blinkSkill, 1f);
+                }
+
                 var hopWorld = HopFor(blinkSkill, worldDistance);
                 if (hopWorld < blinkSkill.MinDistance.Value)
                 {

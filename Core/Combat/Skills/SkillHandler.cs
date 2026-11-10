@@ -122,10 +122,21 @@ namespace FollowHer.Core.Combat.Skills
         /// skill only fills the gaps.</summary>
         private static void ApplyMovementSettingsMigration(MovementSkill movementSkill, ActorSkill skill)
         {
-            if (movementSkill.MovementSettingsVersion >= 1) return;
-            movementSkill.MovementSettingsVersion = 1;
-
             var name = NormalizeSkillName(skill.Name);
+
+            // Version 2: Frostblink always travels its full distance, whatever is clicked (measured).
+            if (movementSkill.MovementSettingsVersion < 2)
+            {
+                if (name == "frostblink") movementSkill.TravelsFullDistance.Value = true;
+            }
+
+            if (movementSkill.MovementSettingsVersion >= 1)
+            {
+                movementSkill.MovementSettingsVersion = 2;
+                return;
+            }
+
+            movementSkill.MovementSettingsVersion = 2;
             if (name == "move") return;
 
             var legacy = FollowHer.Instance.Settings.Movement;
@@ -274,13 +285,13 @@ namespace FollowHer.Core.Combat.Skills
 
                         if (IsMovementSkill(skill))
                         {
+                            MovementSkill activeSkill;
                             if(existingMovementSkills.TryGetValue(skill.Name, out var existingMovementSkill))
                             {
                                 activeSkill = existingMovementSkill;
                                 activeSkill.Skill = skill;
                                 activeSkill.Id = skill.Id;
                                 activeSkill.InternalId = skill.Id2;
-                            MovementSkill activeSkill;
                                 SyncKey(activeSkill, key);
                             }
                             else
@@ -306,13 +317,13 @@ namespace FollowHer.Core.Combat.Skills
                         }
                         else
                         {
+                            ActiveSkill activeSkill;
                             if (existingSkills.TryGetValue(skill.Name, out var existingSkill))
                             {
                                 activeSkill = existingSkill;
                                 activeSkill.Skill = skill;
                                 activeSkill.Id = skill.Id;
                                 activeSkill.InternalId = skill.Id2;
-                            ActiveSkill activeSkill;
                                 SyncKey(activeSkill, key);
                             }
                             else

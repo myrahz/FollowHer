@@ -12,6 +12,9 @@ namespace FollowHer.Core.Combat.Skills
         [Menu("Travels Through Obstacles", "Whether this skill passes over obstacles (blink/teleport: Frostblink, Flame Dash, Lightning Warp, Blink Arrow) rather than colliding with them (ground dash: Shield Charge, Whirling Blades, Leap Slam). Blinks are only fired when the way is blocked but visible; ground dashes need a clear corridor.")]
         public ToggleNode TravelsThroughObstacles { get; set; } = new(false);
 
+        [Menu("Always Travels Full Distance", "The skill moves you the whole Travel Distance in the direction you aim, however close to the character you click (Frostblink: clicking 1 unit away still carries you the full distance). Skills that instead stop at the cursor (Leap Slam) or refuse to move below a minimum (Shield Charge) leave this off. It changes how jumps are planned - a full-distance skill can only land exactly one travel distance away - and means the cursor only has to give a direction.")]
+        public ToggleNode TravelsFullDistance { get; set; } = new(false);
+
         [Menu("Use To Cross Blocked Paths", "Blink skills only. When the walkable way to the target is blocked or much longer than the straight line, but you can see across (a gap or chasm), blink over it instead of walking round. Replaces the old global Dash Enabled.")]
         public ToggleNode UseToCrossBlockedPaths { get; set; } = new(false);
 

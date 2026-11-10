@@ -44,6 +44,12 @@ public static class GridPathfinder
         /// <summary>Longest jump, in grid cells.</summary>
         public int MaxCells;
 
+        /// <summary>When above 0 every jump is exactly this many cells long (a skill that always travels
+        /// its full distance, like Frostblink): the only landing offered along a ray is the cell that far
+        /// out, and it has to be solid ground. 0 = the jump may land anywhere up to
+        /// <see cref="MaxCells"/>.</summary>
+        public int FixedCells;
+
         /// <summary>Cost of one jump on the 10-per-straight-step scale, on top of its length.</summary>
         public int Cost;
 
@@ -104,12 +110,54 @@ public static class GridPathfinder
         return false;
     }
 
+    /// <summary>The landing of a jump that always covers exactly <see cref="JumpOptions.FixedCells"/>:
+    /// the cell that far along the ray, if the ray crosses something unwalkable on the way (otherwise
+    /// it is only a walk), every cell it flies over reads flyable on the terrain layer, and the landing
+    /// has solid ground all round it - the character can be a few cells off the takeoff, so a lone
+    /// walkable cell would be a gamble.</summary>
+    private static (int x, int y, int steps)? FindFixedJumpLanding(int[][] grid, JumpOptions jumps, int x, int y, int direction)
+    {
+        var (dx, dy) = JumpDirections[direction];
+        var n = jumps.FixedCells;
+        var crossed = false;
+        var lastX = int.MinValue;
+        var lastY = int.MinValue;
+
+        for (var s = 1; s <= n; s++)
+        {
+            var px = x + (int)Math.Round(dx * s);
+            var py = y + (int)Math.Round(dy * s);
+            if (px == lastX && py == lastY) continue;
+            lastX = px;
+            lastY = py;
+
+            if (!InBounds(jumps.TargetingGrid, px, py) || jumps.TargetingGrid[py][px] != JumpableTerrainValue) return null;
+            if (!IsWalkable(grid, px, py)) crossed = true;
+        }
+
+        if (!crossed) return null;
+
+        var lx = x + (int)Math.Round(dx * n);
+        var ly = y + (int)Math.Round(dy * n);
+        for (var oy = -2; oy <= 2; oy++)
+        {
+            for (var ox = -2; ox <= 2; ox++)
+            {
+                if (!IsWalkable(grid, lx + ox, ly + oy)) return null;
+            }
+        }
+
+        return (lx, ly, n);
+    }
+
     /// <summary>Walks one ray from a takeoff cell and reports where a jump along it would land: the
     /// first walkable cell after an unwalkable stretch, provided nothing on the way blocks the
     /// targeting layer and the obstacle starts close to the takeoff. Null when there's no such cell
     /// within range.</summary>
     private static (int x, int y, int steps)? FindJumpLanding(int[][] grid, JumpOptions jumps, int x, int y, int direction)
     {
+        if (jumps.FixedCells > 0) return FindFixedJumpLanding(grid, jumps, x, y, direction);
+
         var (dx, dy) = JumpDirections[direction];
         var crossed = false;
         var lastX = int.MinValue;
