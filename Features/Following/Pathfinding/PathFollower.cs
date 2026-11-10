@@ -89,8 +89,8 @@ public readonly struct PathStep
 /// with the returned step (FollowManager.ExecuteMovement owns movement-skill selection).</summary>
 /// <summary>What the configured jump skills can do, for the path planner: the longest jump in world
 /// units (0 = none), what a jump is worth to the planner in grid cells, and - when every jump skill
-/// always travels its full distance - that one fixed length in world units (0 = jumps may be shorter).</summary>
-public readonly record struct JumpCapability(float Range, int CostCells, float FixedWorld = 0f);
+/// always moves at least some distance - that minimum in world units (0 = jumps may be shorter).</summary>
+public readonly record struct JumpCapability(float Range, int CostCells, float MinTravelWorld = 0f);
 
 public class PathFollower
 {
@@ -326,10 +326,8 @@ public class PathFollower
                             // planner assumed. Plan for the skill's reach minus that slack (and a little
                             // more), or a jump at the very edge of its range is offered, the character
                             // stops a few units short, no skill reaches, and it waits there forever.
-                            MaxCells = jump.FixedWorld > 0f
-                                ? (int)Math.Round(jump.FixedWorld / GridToWorldMultiplier)
-                                : (int)((jumpRange - JumpTakeoffWorldDistance - JumpReachMarginWorld) / GridToWorldMultiplier),
-                            FixedCells = jump.FixedWorld > 0f ? (int)Math.Round(jump.FixedWorld / GridToWorldMultiplier) : 0,
+                            MaxCells = (int)((jumpRange - JumpTakeoffWorldDistance - JumpReachMarginWorld) / GridToWorldMultiplier),
+                            MinCells = jump.MinTravelWorld > 0f ? (int)Math.Round(jump.MinTravelWorld / GridToWorldMultiplier) : 0,
                             Cost = jump.CostCells * 10,
                             BannedLandings = _bannedLandings,
                         };

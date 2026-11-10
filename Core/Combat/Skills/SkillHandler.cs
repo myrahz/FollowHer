@@ -124,19 +124,30 @@ namespace FollowHer.Core.Combat.Skills
         {
             var name = NormalizeSkillName(skill.Name);
 
-            // Version 2: Frostblink always travels its full distance, whatever is clicked (measured).
-            if (movementSkill.MovementSettingsVersion < 2)
+            // Version 3: Frostblink measured in game - clicking as close as possible still moves
+            // 352 units, and the furthest click moves 500. Replaces the version-2 guess that it always
+            // travels its full distance.
+            if (movementSkill.MovementSettingsVersion < 3 && name == "frostblink")
             {
-                if (name == "frostblink") movementSkill.TravelsFullDistance.Value = true;
+                movementSkill.MinTravelDistance.Value = 352;
+                movementSkill.HopDistance.Value = 500;
+                movementSkill.MaxJumpDistance.Value = 500;
+            }
+
+            // Version 4: Shield Charge only over open floor (walkable value 5), so it stays off
+            // margin cells, ledges and corners it snags on.
+            if (movementSkill.MovementSettingsVersion < 4 && (name == "shieldcharge" || name == "newshieldcharge"))
+            {
+                movementSkill.RequiredFloorValue.Value = 5;
             }
 
             if (movementSkill.MovementSettingsVersion >= 1)
             {
-                movementSkill.MovementSettingsVersion = 2;
+                movementSkill.MovementSettingsVersion = 4;
                 return;
             }
 
-            movementSkill.MovementSettingsVersion = 2;
+            movementSkill.MovementSettingsVersion = 4;
             if (name == "move") return;
 
             var legacy = FollowHer.Instance.Settings.Movement;

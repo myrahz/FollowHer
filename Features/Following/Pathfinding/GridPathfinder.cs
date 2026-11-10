@@ -44,11 +44,11 @@ public static class GridPathfinder
         /// <summary>Longest jump, in grid cells.</summary>
         public int MaxCells;
 
-        /// <summary>When above 0 every jump is exactly this many cells long (a skill that always travels
-        /// its full distance, like Frostblink): the only landing offered along a ray is the cell that far
-        /// out, and it has to be solid ground. 0 = the jump may land anywhere up to
-        /// <see cref="MaxCells"/>.</summary>
-        public int FixedCells;
+        /// <summary>When above 0 no jump is shorter than this many cells (a skill that always moves at
+        /// least that far, like Frostblink): a landing is offered at the first solid ground at or beyond
+        /// that distance along a ray, since a nearer one would be overshot. 0 = the jump may land as
+        /// soon as the gap ends.</summary>
+        public int MinCells;
 
         /// <summary>Cost of one jump on the 10-per-straight-step scale, on top of its length.</summary>
         public int Cost;
@@ -110,20 +110,19 @@ public static class GridPathfinder
         return false;
     }
 
-    /// <summary>The landing of a jump that always covers exactly <see cref="JumpOptions.FixedCells"/>:
-    /// the cell that far along the ray, if the ray crosses something unwalkable on the way (otherwise
-    /// it is only a walk), every cell it flies over reads flyable on the terrain layer, and the landing
-    /// has solid ground all round it - the character can be a few cells off the takeoff, so a lone
-    /// walkable cell would be a gamble.</summary>
-    private static (int x, int y, int steps)? FindFixedJumpLanding(int[][] grid, JumpOptions jumps, int x, int y, int direction)
+    /// <summary>The landing of a jump that never covers less than <see cref="JumpOptions.MinCells"/>:
+    /// the nearest cell at or beyond that distance along the ray that has solid ground all round it
+    /// (the character can be a few cells off the takeoff, so a lone walkable cell would be a gamble),
+    /// provided the ray crosses something unwalkable on the way - otherwise it is only a walk - and
+    /// every cell it flies over reads flyable on the terrain layer.</summary>
+    private static (int x, int y, int steps)? FindMinTravelJumpLanding(int[][] grid, JumpOptions jumps, int x, int y, int direction)
     {
         var (dx, dy) = JumpDirections[direction];
-        var n = jumps.FixedCells;
         var crossed = false;
         var lastX = int.MinValue;
         var lastY = int.MinValue;
 
-        for (var s = 1; s <= n; s++)
+        for (var s = 1; s <= jumps.MaxCells; s++)
         {
             var px = x + (int)Math.Round(dx * s);
             var py = y + (int)Math.Round(dy * s);
@@ -132,22 +131,32 @@ public static class GridPathfinder
             lastY = py;
 
             if (!InBounds(jumps.TargetingGrid, px, py) || jumps.TargetingGrid[py][px] != JumpableTerrainValue) return null;
-            if (!IsWalkable(grid, px, py)) crossed = true;
-        }
 
-        if (!crossed) return null;
-
-        var lx = x + (int)Math.Round(dx * n);
-        var ly = y + (int)Math.Round(dy * n);
-        for (var oy = -2; oy <= 2; oy++)
-        {
-            for (var ox = -2; ox <= 2; ox++)
+            if (!IsWalkable(grid, px, py))
             {
-                if (!IsWalkable(grid, lx + ox, ly + oy)) return null;
+                crossed = true;
+                continue;
             }
+
+            if (s < jumps.MinCells || !crossed) continue;
+
+            var solid = true;
+            for (var oy = -2; oy <= 2 && solid; oy++)
+            {
+                for (var ox = -2; ox <= 2; ox++)
+                {
+                    if (!IsWalkable(grid, px + ox, py + oy))
+                    {
+                        solid = false;
+                        break;
+                    }
+                }
+            }
+
+            if (solid) return (px, py, s);
         }
 
-        return (lx, ly, n);
+        return null;
     }
 
     /// <summary>Walks one ray from a takeoff cell and reports where a jump along it would land: the
@@ -156,7 +165,7 @@ public static class GridPathfinder
     /// within range.</summary>
     private static (int x, int y, int steps)? FindJumpLanding(int[][] grid, JumpOptions jumps, int x, int y, int direction)
     {
-        if (jumps.FixedCells > 0) return FindFixedJumpLanding(grid, jumps, x, y, direction);
+        if (jumps.MinCells > 0) return FindMinTravelJumpLanding(grid, jumps, x, y, direction);
 
         var (dx, dy) = JumpDirections[direction];
         var crossed = false;
@@ -552,6 +561,12 @@ public static class GridPathfinder
     /// lines and skips the first and last cell: it is meant to model a skill that refuses to fire when
     /// the character is merely too close to something, so standing hard against a wall fails here.</summary>
     public static bool HasCapsuleClearance(int[][] grid, Vector2 from, Vector2 to, float radiusCells, out string failureReason)
+        => HasCapsuleClearance(grid, from, to, radiusCells, 1, out failureReason);
+
+    /// <param name="minCellValue">Lowest walkable-layer value a cell in the swept area may read:
+    /// 1 = any walkable cell; 5 = open floor only (the margin cells beside walls read 1-4).</param>
+    public static bool HasCapsuleClearance(int[][] grid, Vector2 from, Vector2 to, float radiusCells, int minCellValue,
+        out string failureReason)
     {
         failureReason = null;
         if (grid == null)
@@ -585,9 +600,10 @@ public static class GridPathfinder
                 for (var dx = -reach; dx <= reach; dx++)
                 {
                     if (dx * dx + dy * dy > radiusSquared) continue;
-                    if (IsWalkable(grid, cx + dx, cy + dy)) continue;
+                    if (IsWalkable(grid, cx + dx, cy + dy) && grid[cy + dy][cx + dx] >= minCellValue) continue;
 
-                    failureReason = $"cell ({cx + dx},{cy + dy}) is blocked, within {radius:F1} of " +
+                    var value = IsWalkable(grid, cx + dx, cy + dy) ? $"reads {grid[cy + dy][cx + dx]}, below {minCellValue}" : "is blocked";
+                    failureReason = $"cell ({cx + dx},{cy + dy}) {value}, within {radius:F1} of " +
                                     (i == 0 ? "the start of the hop" : $"hop point ({cx},{cy})");
                     return false;
                 }

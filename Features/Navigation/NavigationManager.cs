@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using ExileCore;
+using ExileCore.PoEMemory.MemoryObjects;
 using FollowHer.Features.Following;
 using FollowHer.Features.Following.Pathfinding;
 
@@ -28,6 +29,17 @@ public class NavigationManager
 
     private DateTime _deadline = DateTime.MaxValue;
     private int _consecutiveNoPath;
+
+    // Stuck recovery: how long the character has been pinned in one place while it should be going
+    // somewhere, and the short detour taken to get out of it.
+    private readonly StuckWatchdog _stuck = new();
+    private DateTime _sidestepUntil = DateTime.MinValue;
+    private Vector3 _sidestepWorld;
+    private Vector2 _sidestepGrid;
+    private const double StuckDiagnoseSeconds = 1.2;
+    private const double StuckWalkOnlySeconds = 2.5;
+    private const double StuckSidestepSeconds = 4.0;
+    private const double StuckGiveUpSeconds = 9.0;
 
     public NavigationManager(GameController gameController, FollowManager followManager, PathFollower pathFollower)
     {
@@ -142,6 +154,8 @@ public class NavigationManager
         _consecutiveNoPath = 0;
         _deadline = DateTime.MaxValue;
         _pathFollower.Reset();
+        _stuck.Reset();
+        _sidestepUntil = DateTime.MinValue;
     }
 
     /// <summary>Issues one movement input toward a waypoint. ExecuteMovement declines when the point
@@ -154,6 +168,67 @@ public class NavigationManager
         Status = _followManager.ExecuteMovement(world, grid)
             ? status
             : $"{status} - waiting for it to come on screen";
+    }
+
+    /// <summary>Escalating answer to a character that is pinned in place while navigating (a charge
+    /// into a wall or a monster, a skill that never fires, a waypoint that can't be reached). Each stage
+    /// happens once per episode and a bit of progress resets the lot:
+    /// 1. log what the situation is - health, nearby monsters, keys held - and release stuck keys;
+    /// 2. stop using movement skills and just walk;
+    /// 3. step off in a direction that isn't the blocked one, and replan from there;
+    /// 4. give up, rather than stand still until something kills the character.
+    /// Returns true when it took over the tick.</summary>
+    private bool HandleStuck(Entity player, PathStep step, NavTarget target)
+    {
+        if (DateTime.Now < _sidestepUntil)
+        {
+            Move(_sidestepWorld, _sidestepGrid, $"{target.Label} - stepping clear of an obstacle");
+            return true;
+        }
+
+        var seconds = _stuck.Observe(player.PosNum);
+
+        if (_stuck.Reached(seconds, StuckDiagnoseSeconds, 1))
+        {
+            var released = _followManager.ReleaseStuckSkillKeys();
+            _followManager.LogDebug($"STUCK for {seconds:F1}s at grid ({player.GridPosNum.X:F0},{player.GridPosNum.Y:F0}), " +
+                                    $"step {step.Kind} toward grid ({step.Grid.X:F0},{step.Grid.Y:F0}); " +
+                                    $"{_followManager.DescribeSurroundings()}; stuck skill keys released: {released}");
+        }
+
+        if (_stuck.Reached(seconds, StuckWalkOnlySeconds, 2))
+        {
+            _followManager.SuppressMovementSkills(6000);
+            _followManager.LogDebug($"STUCK for {seconds:F1}s - movement skills off for 6 s, walking only");
+        }
+
+        if (_stuck.Reached(seconds, StuckSidestepSeconds, 3))
+        {
+            var blocked = new Vector2(step.World.X - player.PosNum.X, step.World.Y - player.PosNum.Y);
+            if (_followManager.TryPickSidestep(blocked, out var world, out var grid))
+            {
+                _sidestepWorld = world;
+                _sidestepGrid = grid;
+                _sidestepUntil = DateTime.Now.AddMilliseconds(1500);
+                _pathFollower.Reset();
+                _followManager.LogDebug($"STUCK for {seconds:F1}s - stepping aside to grid ({grid.X:F0},{grid.Y:F0}) and replanning");
+                Move(world, grid, $"{target.Label} - stepping clear of an obstacle");
+                return true;
+            }
+
+            _pathFollower.Reset();
+            _followManager.LogDebug($"STUCK for {seconds:F1}s - no open ground to step aside to, replanning");
+        }
+
+        if (_stuck.Reached(seconds, StuckGiveUpSeconds, 4))
+        {
+            _followManager.StopMovement();
+            _followManager.LogDebug($"STUCK for {seconds:F1}s - giving up: {_followManager.DescribeSurroundings()}");
+            Stop($"stuck - no progress for {seconds:F0} s at grid ({player.GridPosNum.X:F0},{player.GridPosNum.Y:F0})");
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>Runs one tick of navigation. Returns true whenever a destination is set - navigation
@@ -191,6 +266,17 @@ public class NavigationManager
         }
 
         var step = _pathFollower.GetNextStep(targetGrid, settings.Movement.KeepWithinDistance.Value * 1.5f);
+
+        // Only ticks that are meant to be moving count towards "stuck": waiting at a jump takeoff or
+        // for terrain data is standing still on purpose.
+        if (step.Kind is PathStepKind.Moving or PathStepKind.Direct or PathStepKind.Arrived)
+        {
+            if (HandleStuck(player, step, target)) return true;
+        }
+        else
+        {
+            _stuck.Reset();
+        }
 
         switch (step.Kind)
         {

@@ -429,9 +429,10 @@ Per-skill settings:
 | Setting | What it does |
 |---|---|
 | **Use To Cross Blocked Paths** / **Use For Travel** | The two roles above. They replace the old global *Dash Enabled* and *Prefer Movement Skills For Travel*. |
-| **Always Travels Full Distance** | The skill moves you the whole Travel Distance in the aimed direction however close you click (Frostblink: clicking 1 unit away still carries you the full distance). The cursor then only supplies a direction, jumps are planned only where the landing is exactly one travel distance out and is solid ground all round, and the skill is skipped if the spot it would land on isn't walkable. Leave it off for skills that stop at the cursor (Leap Slam) or refuse to move below a minimum (Shield Charge — that is what **Minimum Distance Per Use** is for). |
+| **Minimum Travel Distance** | The least the skill ever moves you. Clicking closer than this still carries you this far; clicking further goes to the click, up to the Travel Distance. Frostblink measured in game: closest click moves **352** units, furthest **500**. Jumps are then planned with landings no nearer than the minimum (a nearer one would be overshot), and the skill is skipped if the spot it would actually land on isn't solid ground. `0` for skills that stop at the cursor (Leap Slam). Not the same as **Minimum Distance Per Use**, which is for skills that don't move at all when you click too close (Shield Charge). |
 | **Travel Distance Per Use** | How far one use carries you. The cursor is aimed this far ahead; blinks and hops never aim beyond it. |
 | **Minimum Distance Per Use** | Don't use the skill to cover less than this; the character walks instead. Measure it: do the shortest use and compare positions (Shield Charge ≈ 260). |
+| **Required Floor Value (0-5)** | The lowest walkable-layer value every cell of the hop (and the cell you stand on) may read. `5` = open floor only (margin cells beside walls read 1-4), which keeps Shield Charge off corners and ledges; `0` = any walkable cell. Works with Hitbox Clearance, which sets how wide the checked strip is. |
 | **Hitbox Clearance (cells)** | Radius around the character and along the hop that must be walkable. See [Per-skill hitbox clearance](#per-skill-hitbox-clearance). |
 | **Max Jump Distance** | Reach when planning jumps over gaps. `0` = never planned for jumps - leave it `0` on skills that collide with walls. |
 | **Jump Path Cost (cells)** | What a jump with this skill is worth to the planner: a jump is only taken when the walk is longer than the jump plus this. The planner uses the cheapest cost among the skills that can jump. |
@@ -477,6 +478,17 @@ Some movement skills refuse to fire when the character is too close to an obstac
 - Keep **Wall Clearance** at least as large as the biggest hitbox radius you set. If the route is allowed to hug walls closer than a skill's radius, that skill never gets enough room along it.
 
 If a skill never fires, turn on **Show Detailed Debug**: the log names the first blocked cell, whether it's at the start of the hop or along it, and the radius that was used.
+
+### Stuck recovery (Navigator)
+
+If the character should be moving but stays within ~40 units of one spot, navigation escalates, once per episode (any real progress resets it):
+
+1. **1.2 s** - log one `STUCK` line: health, whether the character is moving, hostile monsters within 300 units (and the nearest), which skill keys Windows still sees held, and the last aim point. Any skill key left down is released.
+2. **2.5 s** - movement skills are switched off for 6 s and the character just walks.
+3. **4 s** - steps aside to the most open ground that isn't toward the blocked direction (up to 12 cells), then replans from there.
+4. **9 s** - gives up with a status saying where it stopped, rather than standing still until something kills the character.
+
+Plain `Move` clicks are logged too (`Walking (Move) toward ...`, at most once a second), so the log now shows the difference between "walking" and "doing nothing". A waypoint that does not project onto the screen is aimed at a nearer point on the same line instead of being skipped silently, which could otherwise leave a stationary character waiting for a point that only comes on screen once it moves.
 
 ### Why a movement skill never fires while pathfinding
 

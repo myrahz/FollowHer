@@ -12,8 +12,8 @@ namespace FollowHer.Core.Combat.Skills
         [Menu("Travels Through Obstacles", "Whether this skill passes over obstacles (blink/teleport: Frostblink, Flame Dash, Lightning Warp, Blink Arrow) rather than colliding with them (ground dash: Shield Charge, Whirling Blades, Leap Slam). Blinks are only fired when the way is blocked but visible; ground dashes need a clear corridor.")]
         public ToggleNode TravelsThroughObstacles { get; set; } = new(false);
 
-        [Menu("Always Travels Full Distance", "The skill moves you the whole Travel Distance in the direction you aim, however close to the character you click (Frostblink: clicking 1 unit away still carries you the full distance). Skills that instead stop at the cursor (Leap Slam) or refuse to move below a minimum (Shield Charge) leave this off. It changes how jumps are planned - a full-distance skill can only land exactly one travel distance away - and means the cursor only has to give a direction.")]
-        public ToggleNode TravelsFullDistance { get; set; } = new(false);
+        [Menu("Minimum Travel Distance", "The least this skill ever moves you. Clicking closer than this still carries you this far in that direction; clicking further goes to the click, up to the Travel Distance (Frostblink: about 352 minimum, 500 maximum). It changes how jumps are planned - a landing closer than this is overshot - and the skill is skipped when the spot it would actually land on isn't solid ground. Measure it: cast with the cursor as close to the character as possible and compare your position before and after. 0 = the skill stops wherever you click (Leap Slam). Not the same as Minimum Distance Per Use, which is for skills that refuse to move at all when you click too close (Shield Charge).")]
+        public RangeNode<int> MinTravelDistance { get; set; } = new(0, 0, 2000);
 
         [Menu("Use To Cross Blocked Paths", "Blink skills only. When the walkable way to the target is blocked or much longer than the straight line, but you can see across (a gap or chasm), blink over it instead of walking round. Replaces the old global Dash Enabled.")]
         public ToggleNode UseToCrossBlockedPaths { get; set; } = new(false);
@@ -29,6 +29,9 @@ namespace FollowHer.Core.Combat.Skills
 
         [Menu("Hitbox Clearance (cells)", "Simulates this skill refusing to fire when the character is too close to an obstacle, as if the hitbox were bigger. Before using it, every cell within this radius of the character and of the whole hop must be walkable - including where you stand now, so hugging a wall blocks it until you've moved clear. 1 cell is about 11 world units; cell values count 1..5 with distance from a wall, so a radius of 5 means 'open floor only'. 0 = only the cells on the line itself. Applies to skills that collide with obstacles, not blinks. Wall Clearance should be at least this large or the route never leaves enough room.")]
         public RangeNode<float> ClearanceRadius { get; set; } = new(0f, 0f, 8f);
+
+        [Menu("Required Floor Value (0-5)", "The lowest walkable-layer value every cell of the hop (and the cell you stand on) may read for this skill to be used. The walkable debug shows 5 on open floor and 1-4 on the margin cells nearer a wall; 0 = any walkable cell. 5 = only fire over open floor, which keeps a skill that collides with walls (Shield Charge) away from corners, ledges and clutter. Applies together with Hitbox Clearance, which sets how wide the checked strip is.")]
+        public RangeNode<int> RequiredFloorValue { get; set; } = new(0, 0, 5);
 
         [Menu("Max Jump Distance", "How far this skill can jump over a gap or low obstacle, in world units, measured from where you stand. Pathfinding uses it to plan shortcuts over gaps. 0 = never plan jumps with this skill - leave it 0 on skills that collide with walls (Shield Charge), or the planner will send them over obstacles they cannot cross. Set it to what you actually see in game: too low and shortcuts are missed, too high and the character falls short.")]
         public RangeNode<int> MaxJumpDistance { get; set; } = new(0, 0, 2000);

@@ -903,6 +903,132 @@ public class FollowManager
         ExileCore.Input.Click(MouseButtons.Left);
     }
 
+    private DateTime _movementSkillsSuppressedUntil = DateTime.MinValue;
+    private DateTime _nextWalkLogAt = DateTime.MinValue;
+
+    /// <summary>Plain walking only, no movement skills, for a while - the stuck recovery's answer to a
+    /// skill that keeps being picked and keeps not moving the character.</summary>
+    internal void SuppressMovementSkills(int milliseconds) =>
+        _movementSkillsSuppressedUntil = DateTime.Now.AddMilliseconds(milliseconds);
+
+    /// <summary>Lets go of every skill key the plugin knows about, and sends a release for any that
+    /// Windows still sees down although the plugin isn't holding it. Returns how many of the latter
+    /// there were - a key left down makes the game repeat that skill forever.</summary>
+    internal int ReleaseStuckSkillKeys()
+    {
+        _skillHandler.ReleaseAllSkills();
+
+        var stuck = 0;
+        foreach (var skill in FollowHer.Instance.Settings.Movement.MovementSkills.Content)
+        {
+            var key = skill.Key.Value;
+            if (key == Keys.None || key == Keys.LButton || key == Keys.RButton) continue;
+            if (!ExileCore.Input.IsKeyDown(key)) continue;
+
+            ExileCore.Input.KeyUp(key);
+            stuck++;
+        }
+
+        return stuck;
+    }
+
+    /// <summary>One line of context for a stuck report: health, whether the character thinks it is
+    /// moving, which skill keys are down, and the hostile monsters close by.</summary>
+    internal string DescribeSurroundings()
+    {
+        var player = _gameController.Player;
+        if (player == null) return "no player";
+
+        var life = player.GetComponent<Life>();
+        var hp = life != null ? $"{life.HPPercentage * 100:F0}%" : "?";
+
+        var near = 0;
+        var nearest = float.MaxValue;
+        var monsters = _gameController.EntityListWrapper?.ValidEntitiesByType?.GetValueOrDefault(EntityType.Monster);
+        if (monsters != null)
+        {
+            foreach (var monster in monsters)
+            {
+                if (monster == null || !monster.IsValid || !monster.IsAlive || !monster.IsHostile) continue;
+                var distance = Vector3.Distance(player.PosNum, monster.PosNum);
+                if (distance > 300f) continue;
+                near++;
+                nearest = Math.Min(nearest, distance);
+            }
+        }
+
+        var keysDown = string.Join(",", FollowHer.Instance.Settings.Movement.MovementSkills.Content
+            .Where(s => s.Key.Value != Keys.None && s.Key.Value != Keys.LButton && s.Key.Value != Keys.RButton &&
+                        ExileCore.Input.IsKeyDown(s.Key.Value))
+            .Select(s => s.Name));
+
+        return $"hp {hp}, isMoving={IsPlayerMoving()}, hostile monsters within 300u: {near}" +
+               (near > 0 ? $" (nearest {nearest:F0}u)" : "") +
+               $", skill keys down: [{keysDown}], last aim: {(_lastMoveTargetWorld.HasValue ? _lastMoveTargetWorld.Value.ToString() : "none")}";
+    }
+
+    /// <summary>A point to walk to that is not toward where the character is stuck: of 16 directions,
+    /// the one with the most open, walkable floor (up to 12 cells), excluding those within 60 degrees
+    /// of <paramref name="blockedDirection"/>. False when nothing has at least 5 cells of room.</summary>
+    internal bool TryPickSidestep(Vector2 blockedDirection, out Vector3 world, out Vector2 grid)
+    {
+        world = default;
+        grid = default;
+
+        var gridData = _lineOfSight.GetGridReference(LineOfSightDataType.Walkable);
+        var player = _gameController.Player;
+        if (gridData == null || player == null) return false;
+
+        var origin = player.GridPosNum;
+        if (blockedDirection.LengthSquared() > 0.0001f) blockedDirection = Vector2.Normalize(blockedDirection);
+
+        var bestScore = 4f;
+        var found = false;
+        for (var i = 0; i < 16; i++)
+        {
+            var angle = i * Math.PI / 8;
+            var direction = new Vector2((float)Math.Cos(angle), (float)Math.Sin(angle));
+            if (Vector2.Dot(direction, blockedDirection) > 0.5f) continue;
+
+            var free = 0;
+            for (var step = 1; step <= 12; step++)
+            {
+                var x = (int)Math.Round(origin.X + direction.X * step);
+                var y = (int)Math.Round(origin.Y + direction.Y * step);
+                if (!GridPathfinder.IsCellWalkable(gridData, x, y)) break;
+                free = step;
+            }
+
+            if (free <= bestScore) continue;
+            bestScore = free;
+            found = true;
+            grid = origin + direction * free;
+        }
+
+        if (!found) return false;
+
+        world = _pathFollower.GridToWorld((int)Math.Round(grid.X), (int)Math.Round(grid.Y));
+        return true;
+    }
+
+    /// <summary>A screen position for a world point, pulled toward the character if the point itself
+    /// doesn't project (behind the camera, off the edge). Returns the world point actually used.</summary>
+    private Vector2 ProjectToScreen(Vector3 world, out Vector3 used)
+    {
+        var camera = _gameController.IngameState.Camera;
+        var from = _gameController.Player.PosNum;
+
+        foreach (var fraction in new[] { 1f, 0.75f, 0.5f, 0.3f })
+        {
+            used = from + (world - from) * fraction;
+            var screen = camera.WorldToScreen(used);
+            if (screen != Vector2.Zero) return screen;
+        }
+
+        used = world;
+        return Vector2.Zero;
+    }
+
     // Called whenever Follow decides no movement is needed this tick - releases any held
     // movement/dash key so the character actually stops instead of drifting toward a stale
     // cursor position (see plan notes on the KeepWithinDistance freeze/ping-pong bug).
@@ -923,8 +1049,12 @@ public class FollowManager
 
     internal bool ExecuteMovement(Vector3 targetWorldPosition, Vector2? targetGridPosition = null, MovementSkill forcedSkill = null)
     {
-        var screenPos = _gameController.IngameState.Camera.WorldToScreen(targetWorldPosition);
+        // A waypoint that doesn't project to the screen (off the edge, behind the camera) used to
+        // return here without sending anything - a character that wasn't moving then stayed put,
+        // because the point only comes on screen once it moves. Aim at a nearer point on the same line.
+        var screenPos = ProjectToScreen(targetWorldPosition, out var projectedWorld);
         if (screenPos == Vector2.Zero) return false;
+        targetWorldPosition = projectedWorld;
 
         _lastMoveTargetWorld = targetWorldPosition;
 
@@ -963,6 +1093,13 @@ public class FollowManager
         if (movementSkill != null)
         {
             LogDebug($"Using movement skill '{movementSkill.Name}' toward {aimWorld}");
+        }
+        else if (DateTime.Now >= _nextWalkLogAt)
+        {
+            // Plain Move clicks used to be invisible in the log, which made "the plugin is walking" and
+            // "the plugin is doing nothing" look the same. Throttled: it fires every input.
+            _nextWalkLogAt = DateTime.Now.AddMilliseconds(1000);
+            LogDebug($"Walking (Move) toward {aimWorld}");
         }
 
         var inputFrequency = FollowHer.Instance.Settings.Movement.InputFrequency.Value;
@@ -1015,12 +1152,11 @@ public class FollowManager
             .FirstOrDefault(s => s.TravelsThroughObstacles && s.UseToCrossBlockedPaths &&
                                  _skillMonitor.CanUseSkill(s) &&
                                  directWorld >= s.MinDistance.Value &&
-                                 (s.TravelsFullDistance
-                                     // Goes the whole distance whatever is clicked, so it must not
-                                     // overshoot the leader by much and must land on ground.
-                                     ? directWorld >= s.EffectiveHopDistance - FullDistanceJumpToleranceWorld &&
-                                       LandsOnGround(s, player.GridPosNum, leaderEntity.GridPosNum)
-                                     : s.EffectiveHopDistance <= 0 || directWorld <= s.EffectiveHopDistance));
+                                 (s.EffectiveHopDistance <= 0 || directWorld <= s.EffectiveHopDistance) &&
+                                 // Never moves less than its minimum, so it must not overshoot the
+                                 // leader by much and must land on ground.
+                                 s.MinTravelDistance.Value - directWorld <= BlinkOvershootWorld &&
+                                 LandsOnGround(s, player.GridPosNum, leaderEntity.GridPosNum));
         if (blinkSkill == null) return null;
 
         // A blink can only go where it can see. Without this it would try to blink straight into a
@@ -1089,34 +1225,48 @@ public class FollowManager
         var skills = ConfiguredJumpSkills();
         if (skills.Count == 0) return default;
 
-        // When nothing can make a short jump, the planner may only offer landings exactly one travel
-        // distance out. With any variable skill in the set, ranges stay "up to"; a fixed-distance skill
-        // is then checked for a safe landing at the moment of use instead.
-        var fixedWorld = skills.All(s => s.TravelsFullDistance) ? skills.Max(s => s.EffectiveHopDistance) : 0;
-        return new JumpCapability(skills.Max(s => s.MaxJumpDistance.Value), skills.Min(s => s.JumpPathCost.Value), fixedWorld);
+        // When nothing can make a short jump, the planner must not offer landings closer than the
+        // shortest minimum travel - the skill would overshoot them. With any skill that stops at the
+        // cursor in the set the minimum is 0, and a skill with a minimum is checked for a safe
+        // landing at the moment of use instead.
+        var minTravelWorld = skills.Min(s => s.MinTravelDistance.Value);
+        return new JumpCapability(skills.Max(s => s.MaxJumpDistance.Value), skills.Min(s => s.JumpPathCost.Value), minTravelWorld);
     }
 
-    // Slack when matching a jump to a full-distance skill: the character stops within the takeoff
-    // tolerance of the takeoff cell, so the landing is that far from exactly one travel distance away.
-    private const float FullDistanceJumpToleranceWorld = 90f;
+    // How far past a target a skill with a minimum travel may carry the character before it is no use:
+    // clicking nearer than the minimum still moves the full minimum, so the character ends up past it.
+    private const float BlinkOvershootWorld = 150f;
 
-    private static float JumpReachWorld(MovementSkill skill) =>
-        skill.TravelsFullDistance ? skill.EffectiveHopDistance + FullDistanceJumpToleranceWorld : skill.MaxJumpDistance.Value;
+    private static float JumpReachWorld(MovementSkill skill) => skill.MaxJumpDistance.Value;
+
+    /// <summary>Where a use of <paramref name="skill"/> aimed at something <paramref name="distance"/>
+    /// away actually carries the character: to the target if that is between the skill's minimum travel
+    /// and its reach, otherwise clamped to them.</summary>
+    private static float ActualTravel(MovementSkill skill, float distance)
+    {
+        var reach = skill.EffectiveHopDistance;
+        var travel = reach > 0 ? Math.Min(distance, reach) : distance;
+        return Math.Max(travel, skill.MinTravelDistance.Value);
+    }
 
     /// <summary>Whether <paramref name="skill"/> can make a jump to a landing <paramref name="distance"/>
-    /// away. A skill that stops at the cursor just has to reach; one that always travels its full distance
-    /// has to be about one travel distance away, or it carries the character past the landing.</summary>
-    private static bool JumpFitsFrom(MovementSkill skill, float distance) =>
-        skill.TravelsFullDistance
-            ? Math.Abs(distance - skill.EffectiveHopDistance) <= FullDistanceJumpToleranceWorld
-            : skill.MaxJumpDistance.Value >= distance;
+    /// away. It has to reach, and if it moves at least some minimum it must not overshoot a nearer
+    /// landing onto bad ground.</summary>
+    private bool JumpFitsFrom(MovementSkill skill, float distance, Vector2 playerGrid, Vector2 landingGrid)
+    {
+        if (skill.MaxJumpDistance.Value < distance) return false;
+        if (distance >= skill.MinTravelDistance.Value) return true;
 
-    /// <summary>For a skill that always travels its full distance: whether the spot it would land on,
-    /// one travel distance from the character toward <paramref name="targetGrid"/>, is solid ground the
-    /// skill can see. Skills that stop at the cursor are always fine.</summary>
+        return skill.MinTravelDistance.Value - distance <= BlinkOvershootWorld &&
+               LandsOnGround(skill, playerGrid, landingGrid);
+    }
+
+    /// <summary>For a skill that always moves at least a minimum: whether the spot it would really land
+    /// on when aimed toward <paramref name="targetGrid"/> is solid ground the skill can see. Skills
+    /// without a minimum travel stop at the cursor and are always fine here.</summary>
     private bool LandsOnGround(MovementSkill skill, Vector2 playerGrid, Vector2 targetGrid)
     {
-        if (!skill.TravelsFullDistance) return true;
+        if (skill.MinTravelDistance.Value <= 0) return true;
 
         var grid = _lineOfSight.GetGridReference(LineOfSightDataType.Walkable);
         if (grid == null) return false;
@@ -1124,7 +1274,8 @@ public class FollowManager
         var direction = targetGrid - playerGrid;
         if (direction.LengthSquared() < 0.0001f) return false;
 
-        var end = playerGrid + Vector2.Normalize(direction) * (skill.EffectiveHopDistance / GridToWorldMultiplier);
+        var travelWorld = ActualTravel(skill, direction.Length() * GridToWorldMultiplier);
+        var end = playerGrid + Vector2.Normalize(direction) * (travelWorld / GridToWorldMultiplier);
         var endX = (int)Math.Round(end.X);
         var endY = (int)Math.Round(end.Y);
         for (var oy = -1; oy <= 1; oy++)
@@ -1149,7 +1300,8 @@ public class FollowManager
 
         var distance = Vector3.Distance(player.PosNum, step.World);
         var ready = UsableJumpSkills();
-        var skill = ready.FirstOrDefault(s => JumpFitsFrom(s, distance));
+        var playerGridNow = player.GridPosNum;
+        var skill = ready.FirstOrDefault(s => JumpFitsFrom(s, distance, playerGridNow, step.Grid));
         if (skill == null)
         {
             // Skills are ready but the landing is out of their reach - the character stopped a little
@@ -1157,15 +1309,15 @@ public class FollowManager
             // and the give-up timer only starts after a cast), so step closer.
             if (ready.Count > 0)
             {
-                // Out of reach: step closer. A full-distance skill that is ready but would carry us well
-                // past the landing from here is no use either - give the jump up and walk.
-                if (ready.Any(s => distance > JumpReachWorld(s)))
+                // Out of reach: step closer. A skill that is ready and reaches but would carry us well
+                // past the landing onto bad ground is no use either - give the jump up and walk.
+                if (ready.All(s => distance > JumpReachWorld(s)))
                 {
                     LogDebug($"Jump: ready skills reach at most {ready.Max(JumpReachWorld):F0} but the landing is {distance:F0} away - closing in");
                     return ExecuteMovement(step.World, step.Grid);
                 }
 
-                LogDebug($"Jump: the ready skills would carry the character far past the landing ({distance:F0} units away) - replanning on foot");
+                LogDebug($"Jump: the ready skills would overshoot the landing ({distance:F0} units away) onto bad ground - replanning on foot");
                 follower.ReportJumpUnavailable(0);
                 return false;
             }
@@ -1200,6 +1352,8 @@ public class FollowManager
 
     private MovementChoice? TryGetMovementSkill(Vector2 playerGrid, Vector2 targetGrid)
     {
+        if (DateTime.Now < _movementSkillsSuppressedUntil) return null;
+
         var skills = EnabledMovementSkills().ToList();
         if (!skills.Any(s => s.TravelsThroughObstacles ? s.UseToCrossBlockedPaths : s.UseForTravel)) return null;
         if (IsInTownOrHideout()) return null;
@@ -1217,18 +1371,21 @@ public class FollowManager
         {
             foreach (var blinkSkill in blinkSkills.Where(s => _skillMonitor.CanUseSkill(s)))
             {
-                if (blinkSkill.TravelsFullDistance)
+                if (blinkSkill.MinTravelDistance.Value > worldDistance)
                 {
-                    // Lands exactly one travel distance out whatever is clicked, so what matters is
-                    // that spot, not the waypoint; the cursor only supplies the direction.
-                    if (!LandsOnGround(blinkSkill, playerGrid, targetGrid))
+                    // Aimed nearer than its minimum it still moves the minimum, so it ends up past the
+                    // waypoint: only worth it if that spot is solid ground and not too far beyond.
+                    if (blinkSkill.MinTravelDistance.Value - worldDistance > BlinkOvershootWorld ||
+                        !LandsOnGround(blinkSkill, playerGrid, targetGrid))
                     {
-                        LogDebug($"Movement skill '{blinkSkill.Name}': the full-distance blink would not land on solid ground in that direction - skipped");
+                        LogDebug($"Movement skill '{blinkSkill.Name}': its minimum travel {blinkSkill.MinTravelDistance.Value} would overshoot the target ({worldDistance:F0} away) - skipped");
                         continue;
                     }
-
-                    if (blinkSkill.EffectiveHopDistance < blinkSkill.MinDistance.Value) continue;
-                    return new MovementChoice(blinkSkill, 1f);
+                }
+                else if (!LandsOnGround(blinkSkill, playerGrid, targetGrid))
+                {
+                    LogDebug($"Movement skill '{blinkSkill.Name}': would not land on solid ground in that direction - skipped");
+                    continue;
                 }
 
                 var hopWorld = HopFor(blinkSkill, worldDistance);
@@ -1287,7 +1444,8 @@ public class FollowManager
                     // The skill's hitbox radius means "too close to anything and it won't fire", so it
                     // checks a disc swept along the hop, start included.
                     var radius = dashSkill.ClearanceRadius.Value;
-                    if (!GridPathfinder.HasCapsuleClearance(grid, playerGrid, aimGrid, radius, out var failureReason))
+                    if (!GridPathfinder.HasCapsuleClearance(grid, playerGrid, aimGrid, radius,
+                            Math.Max(1, dashSkill.RequiredFloorValue.Value), out var failureReason))
                     {
                         LogDebug($"Movement skill '{dashSkill.Name}': clearance check failed ({failureReason}); player grid ({playerGrid.X:F1},{playerGrid.Y:F1}) -> hop end ({aimGrid.X:F1},{aimGrid.Y:F1}), hitbox radius={radius:F1}");
                         continue;
