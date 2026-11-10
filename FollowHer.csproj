@@ -25,4 +25,10 @@
       <HintPath>..\..\..\GameOffsets.dll</HintPath>
     </Reference>
   </ItemGroup>
+  <ItemGroup>
+    <!-- Tools/ holds standalone developer tools with their own projects; none of it belongs in the plugin build. -->
+    <Compile Remove="Tools\**" />
+    <EmbeddedResource Remove="Tools\**" />
+    <None Remove="Tools\**" />
+  </ItemGroup>
 </Project>
