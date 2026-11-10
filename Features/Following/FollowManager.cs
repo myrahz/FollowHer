@@ -1177,9 +1177,10 @@ public class FollowManager
                     var hopWorld = worldDistance * aimFraction;
                     var aimGrid = playerGrid + (targetGrid - playerGrid) * aimFraction;
 
-                    if (hopWorld < settings.MovementSkillMinDistance || hopWorld > settings.MovementSkillMaxDistance)
+                    var minDistance = Math.Max(settings.MovementSkillMinDistance, dashSkill.MinDistance.Value);
+                    if (hopWorld < minDistance || hopWorld > settings.MovementSkillMaxDistance)
                     {
-                        LogDebug($"Movement skill '{dashSkill.Name}': hop {hopWorld:F0} outside [{settings.MovementSkillMinDistance},{settings.MovementSkillMaxDistance}] - skipped");
+                        LogDebug($"Movement skill '{dashSkill.Name}': hop {hopWorld:F0} outside [{minDistance},{settings.MovementSkillMaxDistance}] - skipped");
                         continue;
                     }
 

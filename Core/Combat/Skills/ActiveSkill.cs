@@ -49,6 +49,9 @@ namespace FollowHer.Core.Combat.Skills
         [Menu("Travel Distance Per Use", "How far one use of this movement skill carries you, in world units (e.g. Leap Slam 100). While walking a path the cursor is aimed this far ahead along it instead of at the next waypoint, so each use covers a full hop, and only that hop has to be clear of obstacles - a bend further along no longer blocks the skill. 0 = use Max Jump Distance, and if that is 0 too, aim at the waypoint as before.")]
         public RangeNode<int> HopDistance { get; set; } = new(0, 0, 2000);
 
+        [Menu("Minimum Distance Per Use", "Don't use this skill to cover less than this many world units. The hop that would be made (the travel distance, or the distance left to the waypoint if that is shorter) has to be at least this long, otherwise the character walks instead. Measure it in game: do the shortest use of the skill and compare your position before and after (Shield Charge about 260). Adds to, never replaces, the global Movement Skill Min Distance - the larger of the two applies. 0 = no per-skill minimum.")]
+        public RangeNode<int> MinDistance { get; set; } = new(0, 0, 2000);
+
         /// <summary>The distance one use is expected to cover: the explicit travel distance, else the
         /// jump range, else unknown (0).</summary>
         [JsonIgnore]
