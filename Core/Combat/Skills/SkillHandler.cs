@@ -52,22 +52,31 @@ namespace FollowHer.Core.Combat.Skills
             BlinkTypeMovementSkills.Contains(NormalizeSkillName(skill.InternalName));
 
         // Skills that carry the character over gaps and low obstacles, with a starting estimate of
-        // their range in world units. These are guesses, not read from the game - the real range
-        // moves with gems and gear - so they err low (a shortcut missed is harmless, a jump that
-        // falls short wastes a few seconds) and are meant to be corrected in the skill's settings.
+        // their range in world units. Except where noted these are guesses, not read from the game -
+        // the real range moves with gems and gear - so they err low (a shortcut missed is harmless, a
+        // jump that falls short wastes a few seconds) and are meant to be corrected in the skill's
+        // settings.
         //
         // "Since" is the defaults version that introduced the entry: a skill already seeded at an
         // older version still picks up entries added after it, but is never re-seeded for one it has
         // already had (that would overwrite a range the user set, or zeroed on purpose).
-        private const int JumpDefaultsCurrentVersion = 2;
+        //
+        // "Replaces" is an earlier estimate that has since been corrected. A skill still sitting
+        // exactly on it was never touched by the user, so it moves to the new value; anything else is
+        // left alone.
+        private const int JumpDefaultsCurrentVersion = 3;
 
-        private static readonly Dictionary<string, (int range, int since)> JumpSkillDefaults = new()
+        private static readonly Dictionary<string, (int range, int since, int replaces)> JumpSkillDefaults = new()
         {
-            ["flamedash"] = (400, 1),
-            ["frostblink"] = (500, 1),
-            ["leapslam"] = (400, 1),
-            ["blinkarrow"] = (500, 2),
-            ["lightningwarp"] = (450, 2),
+            ["flamedash"] = (400, 1, 0),
+            ["frostblink"] = (500, 1, 0),
+
+            // Measured in game: one max-range cast moved the character 660 world units. 400 was the
+            // original guess.
+            ["leapslam"] = (660, 1, 400),
+
+            ["blinkarrow"] = (500, 2, 0),
+            ["lightningwarp"] = (450, 2, 0),
         };
 
         private static void ApplyJumpDefaults(ActiveSkill activeSkill, ActorSkill skill)
@@ -82,18 +91,82 @@ namespace FollowHer.Core.Combat.Skills
             if (seededVersion >= JumpDefaultsCurrentVersion) return;
             activeSkill.JumpDefaultsVersion = JumpDefaultsCurrentVersion;
 
-            if ((JumpSkillDefaults.TryGetValue(NormalizeSkillName(skill.Name), out var entry) ||
-                 JumpSkillDefaults.TryGetValue(NormalizeSkillName(skill.InternalName), out entry)) &&
-                entry.since > seededVersion)
+            if (!JumpSkillDefaults.TryGetValue(NormalizeSkillName(skill.Name), out var entry) &&
+                !JumpSkillDefaults.TryGetValue(NormalizeSkillName(skill.InternalName), out entry))
+            {
+                return;
+            }
+
+            if (entry.since > seededVersion ||
+                (entry.replaces > 0 && activeSkill.MaxJumpDistance.Value == entry.replaces))
             {
                 activeSkill.MaxJumpDistance.Value = entry.range;
             }
+        }
+
+        // The key a skill is pressed with has to follow the game's own binding. A skill that already
+        // existed in the saved settings used to keep whatever key it was first discovered with, so one
+        // bad reading was stored and then reused on every later start - even after the cause was fixed.
+        private static void SyncKey(ActiveSkill activeSkill, System.Windows.Forms.Keys key)
+        {
+            if (activeSkill.Key.Value != key) activeSkill.Key.Value = key;
+        }
+
+        private string _barSignature;
+        private DateTime _nextBarCheckAt = DateTime.MinValue;
+        private const int BarCheckIntervalMs = 1000;
+
+        /// <summary>What's on the skill bar and the key each slot is bound to, as one string - changes
+        /// when you move a skill, swap one in, or rebind a slot.</summary>
+        private string BuildSkillBarSignature()
+        {
+            var skillBar = _gameController.IngameState.IngameUi.SkillBar;
+            var shortcuts = _gameController.IngameState.ShortcutSettings.Shortcuts;
+            var parts = new List<string>();
+
+            for (var i = 0; i < Math.Min(13, skillBar.Skills.Count); i++)
+            {
+                var skill = skillBar.Skills[i]?.Skill;
+                var name = skill == null || skill.Address == 0 ? "-" : $"{skill.Name}:{skill.Id}";
+                var key = shortcuts.FirstOrDefault(x => x.Usage.ToString() == $"Skill{i + 1}").MainKey.ToString();
+                parts.Add($"{name}@{key}");
+            }
+
+            return string.Join("|", parts);
+        }
+
+        /// <summary>Skills are read when the plugin starts and on every area change, so moving a skill or
+        /// rebinding its key mid-zone went unnoticed until the next zone. This is a cheap check, once a
+        /// second, that re-reads the bar when its contents or bindings differ from the last read.</summary>
+        public void RefreshIfSkillBarChanged()
+        {
+            if (DateTime.Now < _nextBarCheckAt) return;
+            _nextBarCheckAt = DateTime.Now.AddMilliseconds(BarCheckIntervalMs);
+
+            string signature;
+            try
+            {
+                signature = BuildSkillBarSignature();
+            }
+            catch
+            {
+                return;
+            }
+
+            if (signature == _barSignature) return;
+
+            // A key held down under its old binding would never be released once the skill's key
+            // changes, so let go of everything before rebuilding.
+            ReleaseAllSkills();
+            Initialize();
         }
 
         public void Initialize()
         {
             try
             {
+                try { _barSignature = BuildSkillBarSignature(); } catch { _barSignature = null; }
+
                 var existingSkills = new Dictionary<string, ActiveSkill>();
                 foreach (var skill in FollowHer.Instance.Settings.Combat.Skills.Content)
                 {
@@ -120,6 +193,12 @@ namespace FollowHer.Core.Combat.Skills
                         if (skill == null || skill.Address == 0)
                             continue;
 
+                        // Bar slot i is shortcut Skill{i+1}. Checked against the live game: ShieldCharge
+                        // sits in slots 1 and 6, and these read T and R - which is where it is bound.
+                        // Shifting the index one further (slot 1 -> Skill3) lands on the right mouse
+                        // button, whose virtual-key code is 2: the plugin then pressed RButton for a skill
+                        // bound to T. Note MainKey is a ConsoleKey, so "1"/"2" are the left/right mouse
+                        // buttons (VK 1/2), not the digit keys - parsing them as Keys is correct.
                         var shortcut = shortcuts.FirstOrDefault(x => x.Usage.ToString() == $"Skill{i + 1}");
                         if (!Enum.TryParse(shortcut.MainKey.ToString(), out System.Windows.Forms.Keys key))
                             continue;
@@ -133,6 +212,7 @@ namespace FollowHer.Core.Combat.Skills
                                 activeSkill.Skill = skill;
                                 activeSkill.Id = skill.Id;
                                 activeSkill.InternalId = skill.Id2;
+                                SyncKey(activeSkill, key);
                             }
                             else
                             {
@@ -173,6 +253,7 @@ namespace FollowHer.Core.Combat.Skills
                                 activeSkill.Skill = skill;
                                 activeSkill.Id = skill.Id;
                                 activeSkill.InternalId = skill.Id2;
+                                SyncKey(activeSkill, key);
                             }
                             else
                             {

@@ -66,6 +66,9 @@ namespace FollowHer.Core.Combat
 
             try
             {
+                // Pick up skills moved or rebound since the last read (throttled to once a second).
+                SkillHandler.RefreshIfSkillBarChanged();
+
                 if (_combatAllowed)
                 {
                     var (skill, target) = GetBestAction();
