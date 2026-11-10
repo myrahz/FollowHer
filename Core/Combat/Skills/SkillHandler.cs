@@ -107,6 +107,16 @@ namespace FollowHer.Core.Combat.Skills
         // The key a skill is pressed with has to follow the game's own binding. A skill that already
         // existed in the saved settings used to keep whatever key it was first discovered with, so one
         // bad reading was stored and then reused on every later start - even after the cause was fixed.
+        private static void ArchiveOffBar(Dictionary<string, ActiveSkill> archive,
+            Dictionary<string, ActiveSkill> known, Dictionary<string, ActiveSkill> onBar)
+        {
+            archive.Clear();
+            foreach (var (name, skill) in known)
+            {
+                if (!onBar.ContainsKey(name)) archive[name] = skill;
+            }
+        }
+
         private static void SyncKey(ActiveSkill activeSkill, System.Windows.Forms.Keys key)
         {
             if (activeSkill.Key.Value != key) activeSkill.Key.Value = key;
@@ -167,13 +177,25 @@ namespace FollowHer.Core.Combat.Skills
             {
                 try { _barSignature = BuildSkillBarSignature(); } catch { _barSignature = null; }
 
+                // Everything we have settings for: skills archived while they were off the bar, then
+                // the ones currently listed on top (those are the live copies, so they win). A skill
+                // that left the bar - the other weapon set, say - used to vanish from here and come
+                // back later with default settings.
                 var existingSkills = new Dictionary<string, ActiveSkill>();
+                foreach (var skill in FollowHer.Instance.Settings.Combat.SkillArchive.Values)
+                {
+                    existingSkills[skill.Name] = skill;
+                }
                 foreach (var skill in FollowHer.Instance.Settings.Combat.Skills.Content)
                 {
                     existingSkills[skill.Name] = skill;
                 }
 
                 var existingMovementSkills = new Dictionary<string, ActiveSkill>();
+                foreach (var skill in FollowHer.Instance.Settings.Movement.MovementSkillArchive.Values)
+                {
+                    existingMovementSkills[skill.Name] = skill;
+                }
                 foreach (var skill in FollowHer.Instance.Settings.Movement.MovementSkills.Content)
                 {
                     existingMovementSkills[skill.Name] = skill;
@@ -293,6 +315,12 @@ namespace FollowHer.Core.Combat.Skills
                         DebugWindow.LogError($"[SkillHandler] Error initializing skill {i}: {ex.Message}");
                     }
                 }
+
+                // Whatever has settings but isn't on the bar now goes to the archive, so it's still
+                // there when the skill returns. Only done here, after a read that got this far, so a
+                // failed refresh can't wipe it. Skills on the bar live in the visible lists instead.
+                ArchiveOffBar(FollowHer.Instance.Settings.Combat.SkillArchive, existingSkills, _skills);
+                ArchiveOffBar(FollowHer.Instance.Settings.Movement.MovementSkillArchive, existingMovementSkills, _movementSkills);
 
                 FollowHer.Instance.Settings.Combat.Skills.Content.Clear();
                 foreach (var skill in _skills.Values)

@@ -14,8 +14,15 @@ namespace FollowHer.Utils
 {
     public enum LineOfSightDataType
     {
+        /// <summary>The targeting layer read as "can a projectile/attack get through": blocks on the
+        /// value 4 only. For attack line of sight.</summary>
         Terrain,
-        Walkable
+
+        Walkable,
+
+        /// <summary>The same targeting layer read as "can a movement skill fly over this": only the
+        /// value 5 is passable, everything else blocks. For jumps and blinks.</summary>
+        Jumpable
     }
 
     public class LineOfSight
@@ -25,6 +32,7 @@ namespace FollowHer.Utils
         private int[][] _walkableData;
         private Vector2 _areaDimensions;
         private const int TARGET_LAYER_VALUE = 4;
+        private const int JUMPABLE_LAYER_VALUE = 5;
 
         private readonly List<(Vector2 Pos, int Value)> _debugPoints = new();
         private readonly List<(Vector2 Start, Vector2 End, bool IsVisible)> _debugRays = new();
@@ -309,12 +317,15 @@ namespace FollowHer.Utils
             return CheckDiagonalLine(start, end, dx, dy, losType);
         }
 
-        // Only the Walkable layer (RawPathfindingData) has a confirmed encoding: verified against
-        // the Radar plugin's own working pathfinder (PathFinder.cs, constructed with pathable
-        // values {1,2,3,4,5}) reading the exact same raw source - value 0 is the only blocking
-        // value, everything else is passable. The Terrain layer (RawTerrainTargetingData, used
-        // for attack-skill targeting LOS) has no such confirmation either way, so it keeps the
-        // prior threshold rather than guessing.
+        // The Walkable layer (RawPathfindingData) is confirmed against the Radar plugin's own working
+        // pathfinder (constructed with pathable values {1,2,3,4,5}) reading the exact same raw
+        // source - value 0 is the only blocking value, everything else is passable.
+        //
+        // The Terrain layer (RawTerrainTargetingData, used for targeting LOS) blocks on exactly
+        // TARGET_LAYER_VALUE (4), as in the original code this was adapted from
+        // (`if (v < 4) continue; if (v <= 4) return false;`). It is NOT ">= 4": on the live game open
+        // floor reads 5 (474k of ~480k walkable cells in one zone), and so does the unwalkable void
+        // beside it, so treating 5 as a wall made every ray over open ground look blocked.
         private static bool IsBlocking(int value, LineOfSightDataType losType)
         {
             if (value < 0) return true; // out-of-bounds sentinel from GetValue
@@ -324,7 +335,14 @@ namespace FollowHer.Utils
                 return value == 0;
             }
 
-            return value >= TARGET_LAYER_VALUE;
+            // Movement skills fly over terrain value 5 and nothing else (checked against the game's
+            // own debug overlay); solid pillars and thick walls read lower.
+            if (losType == LineOfSightDataType.Jumpable)
+            {
+                return value != JUMPABLE_LAYER_VALUE;
+            }
+
+            return value == TARGET_LAYER_VALUE;
         }
 
         private bool CheckVerticalLine(int x, int startY, int endY, LineOfSightDataType losType)
@@ -435,6 +453,7 @@ namespace FollowHer.Utils
             return losType switch
             {
                 LineOfSightDataType.Terrain => _terrainData[y][x],
+                LineOfSightDataType.Jumpable => _terrainData[y][x],
                 LineOfSightDataType.Walkable => _walkableData[y][x],
                 _ => -1
             };

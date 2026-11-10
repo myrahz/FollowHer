@@ -147,6 +147,10 @@ public class PathFollower
     // tolerance: a jump aimed from 300 units back would start from the wrong side of the obstacle.
     private const float JumpTakeoffWorldDistance = 45f;
 
+    // Extra room kept between a planned jump's length and the skill's reach: the landing is a cell
+    // centre, the character stands somewhere within the takeoff tolerance, and distances are rounded.
+    private const float JumpReachMarginWorld = 15f;
+
     // Close enough to the landing cell to call the jump done.
     private const float JumpLandedWorldDistance = 80f;
 
@@ -273,7 +277,12 @@ public class PathFollower
                         jumpOptions = new GridPathfinder.JumpOptions
                         {
                             TargetingGrid = targetingGrid,
-                            MaxCells = (int)(jumpRange / GridToWorldMultiplier),
+                            // The character is only required to stand within JumpTakeoffWorldDistance of
+                            // the takeoff cell, so it may be that much further from the landing than the
+                            // planner assumed. Plan for the skill's reach minus that slack (and a little
+                            // more), or a jump at the very edge of its range is offered, the character
+                            // stops a few units short, no skill reaches, and it waits there forever.
+                            MaxCells = (int)((jumpRange - JumpTakeoffWorldDistance - JumpReachMarginWorld) / GridToWorldMultiplier),
                             Cost = FollowHer.Instance.Settings.Movement.JumpPathCost.Value * 10,
                             BannedLandings = _bannedLandings,
                         };

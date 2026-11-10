@@ -441,6 +441,13 @@ Both are bounded by **Movement Skill Min/Max Distance**. Which bucket a skill la
 
 Leap Slam, Flame Dash and Frostblink can carry you over a gap or low obstacle that you can't walk across. With **Plan Jumps In Pathfinding** on, A* treats those as extra moves: from a cell beside an obstacle it looks along 16 directions for the first walkable cell past it, provided nothing along the way blocks the **targeting** layer (a solid wall stops a jump; a chasm doesn't). The route takes the jump when the walkable detour is longer than the jump plus **Jump Cost**.
 
+How the two debug layers (Render > Show Terrain / Walkable Debug) are read:
+
+- **Walkable layer:** `0` = blocked, **any other value is walkable**. 5 is open floor and 1–4 are the margin cells nearer a wall; you can walk and stand on all of them.
+- **Terrain layer:** **`5` = can be jumped over**, whether or not the cell is walkable. Anything lower is solid (pillars, thick walls) and stops a jump.
+
+So in a row where terrain reads `5 5 5` and walkable reads `5 0 5`, you can't walk from the first cell to the third, but you can jump it. A jump may fly over any run of cells that are all terrain 5, as long as it ends on walkable ground within the skill's reach. It prefers to land on open floor (walkable 5), looking up to 8 cells inland from the lip of the gap, and takes the best ground it finds if none is fully open. Measured on a real zone: a 14-cell (152 unit) band separated two areas by a **464-cell walk**; with jumping it is a **15-cell** route.
+
 Each movement skill has its own **Max Jump Distance** (world units, in the Movement Skills list). `0` means that skill is never used for jumps. Flame Dash, Frostblink, Leap Slam, Blink Arrow and Lightning Warp start at 400 / 500 / 660 / 500 / 450 — **Leap Slam's 660 was measured in game; the rest are estimates, not read from the game**. The real reach depends on your gems and gear, so set them to what you actually see. Too low just misses shortcuts; too high and the character falls short of the landing.
 
 How it behaves:
@@ -454,6 +461,18 @@ Movement skills work best along long straight lines, so two things shape the rou
 
 - **Path Straightness** (Movement settings) charges A* a cost for every change of direction, so among routes of similar length it picks the one with the fewest, longest straight runs. Measured on a real campaign zone: the raw route went from about **7 bends to 2**, and total turning along the smoothed route fell from about **75° to 53°**, with no change in route length and no measurable search cost. It levels off quickly on maps with long corridors, so the default of 4 is already on the plateau; raise it if you still see wiggles. It trades off against **Wall Clearance** — both are soft preferences.
 - **Travel Distance Per Use** (per skill, in the Movement Skills list) is how far one use of that skill carries you — e.g. Leap Slam 100. While walking a path the cursor is aimed *that far ahead* along the route instead of at the next waypoint, so each use covers a full hop. Only that hop has to be clear of obstacles, and the **Movement Skill Min/Max Distance** limits apply to the hop. Without it, a bend a few hundred units ahead vetoed a 100-unit leap, because the clearance check covered the whole distance to the waypoint. `0` = fall back to the skill's **Max Jump Distance**, and if that is `0` too the skill aims at the waypoint as before. Ground-dash skills (Leap Slam, Shield Charge, Whirling Blades) need **Prefer Movement Skills For Travel** on.
+
+### Per-skill hitbox clearance
+
+Some movement skills refuse to fire when the character is too close to an obstacle, as if their hitbox were bigger — you have to step around the corner before they work again. Each ground-dash skill in the Movement Skills list has a **Hitbox Clearance (cells)** setting that simulates this (1 cell ≈ 11 world units):
+
+- Before the skill is used, **every cell within that radius** of the character and of the whole hop must be walkable. That includes where you're standing *now*, so hugging a wall or a corner blocks the skill until you've moved clear. The plugin just keeps walking and tries again on the next input, which is the "move around the corner" you'd otherwise do by hand.
+- Set it per skill, to whatever that skill actually needs. When one skill is blocked, the next enabled ground-dash skill is tried with its own radius.
+- `0` = use the global **Movement Skill Clearance Margin** instead (the older, looser check: three lines along the hop, ignoring the first and last cell).
+- It applies to skills that *collide* with obstacles (Leap Slam, Shield Charge, Whirling Blades), not to blinks.
+- Keep **Wall Clearance** at least as large as the biggest hitbox radius you set. If the route is allowed to hug walls closer than a skill's radius, that skill never gets enough room along it.
+
+If a skill never fires, turn on **Show Detailed Debug**: the log names the first blocked cell, whether it's at the start of the hop or along it, and the radius that was used.
 
 ### Why a movement skill never fires while pathfinding
 
@@ -485,6 +504,9 @@ Distance alone no longer causes this. If the quick search runs out of budget, Fo
 
 **The target navigator lists nothing.**
 The status line next to **Refresh** says why: Radar not loaded or disabled (it must be installed **and enabled** — it's what supplies the list), or Radar has no targets for this area. If it reports a fallback, `targets.json` wasn't found (set **Navigation > Radar targets.json Path**) and room-scoped targets are unavailable. Right after a zone load it can take a moment before Radar has processed the area; the window retries on its own, or press **Refresh**.
+
+**A skill's settings reset after a weapon swap or zone change.**
+The skill lists show only what's on the skill bar right now, and are rebuilt from it. Settings for skills that aren't on the bar (the other weapon set) are kept aside and restored when the skill comes back, so Click-instead-of-hold, Hitbox Clearance, jump and travel distances survive a swap. They're matched by skill name, so renamed or replaced skills start fresh.
 
 **A specific movement skill isn't recognized.**
 Skills are read off the skill bar on area load. Skill-name matching is case/space-insensitive and checks both display and internal names; if one still isn't picked up, note its internal name and it can be added.

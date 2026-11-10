@@ -152,6 +152,12 @@ public class MovementSettings
         EnableControls = false,
     };
 
+    // Settings of movement skills that were on the skill bar earlier but aren't now (the other weapon
+    // set, a skill swapped out for a while). The list above only ever shows what's on the bar, and is
+    // rebuilt from it, so without somewhere to keep these a skill's settings were lost the moment it
+    // left the bar. A plain field so the settings auto-renderer skips it, like Combat.Profiles.
+    public Dictionary<string, ActiveSkill> MovementSkillArchive = new();
+
     public FollowVisualSettings Visual { get; set; } = new();
     public FollowDebugSettings Debug { get; set; } = new();
     public FollowTaskSettings Tasks { get; set; } = new();
@@ -272,6 +278,10 @@ public class CombatSettings
         EnableItemCollapsing = true,
         EnableControls = false,
     };
+
+    // See MovementSettings.MovementSkillArchive: settings of combat skills that aren't on the bar
+    // right now, kept so swapping weapon sets doesn't reset them.
+    public Dictionary<string, ActiveSkill> SkillArchive = new();
 
     // Plain fields (not properties) so ExileCore's settings auto-renderer skips them entirely -
     // the rule/profile editor (Features/Rendering/CombatRuleEditor.cs) renders these itself via

@@ -43,6 +43,9 @@ namespace FollowHer.Core.Combat.Skills
         [Menu("Max Jump Distance", "How far this skill carries you in one use, in world units, measured from where you stand. Pathfinding uses it to look for jumps over gaps and low obstacles (Leap Slam, Flame Dash, Frostblink...). 0 = never plan jumps with this skill. The real range depends on your gems and gear, so set it to what you actually see in game: too low and shortcuts are missed, too high and the character falls short of the landing and gives up on that jump after a few seconds.")]
         public RangeNode<int> MaxJumpDistance { get; set; } = new(0, 0, 2000);
 
+        [Menu("Hitbox Clearance (cells)", "Simulates this skill refusing to fire when the character is too close to an obstacle, as if the hitbox were bigger. Before using the skill, every cell within this radius of the character and of the whole hop must be walkable - including where you are standing now, so hugging a wall or a corner blocks it until you've moved clear (the plugin simply walks on and tries again). 1 cell is about 11 world units. 0 = use the global Movement Skill Clearance Margin instead. Only applies to skills that collide with obstacles (ground dashes like Leap Slam / Shield Charge), not blinks. Wall Clearance should be at least this large, or the route never leaves enough room.")]
+        public RangeNode<float> ClearanceRadius { get; set; } = new(0f, 0f, 8f);
+
         [Menu("Travel Distance Per Use", "How far one use of this movement skill carries you, in world units (e.g. Leap Slam 100). While walking a path the cursor is aimed this far ahead along it instead of at the next waypoint, so each use covers a full hop, and only that hop has to be clear of obstacles - a bend further along no longer blocks the skill. 0 = use Max Jump Distance, and if that is 0 too, aim at the waypoint as before.")]
         public RangeNode<int> HopDistance { get; set; } = new(0, 0, 2000);
 

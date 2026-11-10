@@ -34,7 +34,7 @@ public static class GridPathfinder
 
     /// <summary>What A* needs to consider jumping over obstacles. A jump is an extra edge from a cell
     /// beside an obstacle to the first walkable cell past it, along one of 16
-    /// rays: every cell the ray crosses must be see-through on the targeting layer (a wall stops it),
+    /// rays: every cell the ray crosses must read 5 on the terrain layer (the only flyable value; solid things read lower),
     /// and the part it flies over must be unwalkable on the walkable layer (otherwise it's just a
     /// walk).</summary>
     public sealed class JumpOptions
@@ -65,7 +65,17 @@ public static class GridPathfinder
     private const int JumpMinCells = 2;
     private const int JumpTakeoffReach = 2;
     private const int JumpFirstObstacleWithin = 3;
-    private const int TargetingBlockValue = 4;
+
+    // On the terrain/targeting layer, 5 is the one value that can be flown over (confirmed against the
+    // game's own debug overlay): a jump may only cross cells that read 5 there, whether or not they are
+    // walkable. Solid things - pillars, thick walls - read lower (0-4) and stop it.
+    private const int JumpableTerrainValue = 5;
+
+    // The walkable layer is a margin gradient: 5 is open floor, 1-4 are the cells nearer a wall, 0 is
+    // blocked. All of 1-5 can be stood on, but a landing right at the edge of a gap is the riskiest
+    // place to land, so the planner looks a few cells inland for open floor.
+    private const int OpenFloorValue = 5;
+    private const int JumpLandingInlandCells = 8;
 
     private static readonly (float dx, float dy)[] JumpDirections = BuildJumpDirections();
 
@@ -113,8 +123,9 @@ public static class GridPathfinder
             lastX = px;
             lastY = py;
 
-            // A wall (or the edge of the map) stops the jump; a gap or low obstacle doesn't.
-            if (!InBounds(jumps.TargetingGrid, px, py) || jumps.TargetingGrid[py][px] >= TargetingBlockValue) return null;
+            // Only terrain value 5 can be flown over. Anything else - solid pillars, thick walls - or
+            // the edge of the map stops the jump here.
+            if (!InBounds(jumps.TargetingGrid, px, py) || jumps.TargetingGrid[py][px] != JumpableTerrainValue) return null;
 
             if (!IsWalkable(grid, px, py))
             {
@@ -132,12 +143,42 @@ public static class GridPathfinder
 
             if (s < JumpMinCells) return null;
 
+            // First ground past the gap - usually its very lip, a margin cell right beside the drop.
+            // Look a little inland along the same line for open floor to land on instead, taking the
+            // best (highest) ground found if none is fully open.
+            var landX = px;
+            var landY = py;
+            var landSteps = s;
+            var landValue = grid[py][px];
+
+            var inlandLimit = Math.Min(jumps.MaxCells, s + JumpLandingInlandCells);
+            for (var t = s + 1; t <= inlandLimit && landValue < OpenFloorValue; t++)
+            {
+                var ix = x + (int)Math.Round(dx * t);
+                var iy = y + (int)Math.Round(dy * t);
+                if (ix == landX && iy == landY) continue;
+
+                if (!IsWalkable(grid, ix, iy) || !InBounds(jumps.TargetingGrid, ix, iy) ||
+                    jumps.TargetingGrid[iy][ix] != JumpableTerrainValue)
+                {
+                    break;
+                }
+
+                if (grid[iy][ix] > landValue)
+                {
+                    landX = ix;
+                    landY = iy;
+                    landSteps = t;
+                    landValue = grid[iy][ix];
+                }
+            }
+
             // Land with ground ahead as well, not on the last sliver of a ledge.
-            var nx = x + (int)Math.Round(dx * (s + 1));
-            var ny = y + (int)Math.Round(dy * (s + 1));
+            var nx = x + (int)Math.Round(dx * (landSteps + 1));
+            var ny = y + (int)Math.Round(dy * (landSteps + 1));
             if (!IsWalkable(grid, nx, ny)) return null;
 
-            return (px, py, s);
+            return (landX, landY, landSteps);
         }
 
         return null;
@@ -456,6 +497,58 @@ public static class GridPathfinder
     // with obstacles (unlike Move, which routes around them) doesn't clip a corner with its
     // hitbox. Uses this file's own IsWalkable definition (confirmed against Radar's working
     // pathfinder: only value 0 blocks on the Walkable grid).
+    /// <summary>Whether a character with a round hitbox of <paramref name="radiusCells"/> could make the
+    /// whole hop: every cell whose centre lies within that radius of any point along the segment - the
+    /// start included - must be walkable. This is deliberately stricter than
+    /// <see cref="HasCorridorClearance(int[][], Vector2, Vector2, float)"/>, which samples three thin
+    /// lines and skips the first and last cell: it is meant to model a skill that refuses to fire when
+    /// the character is merely too close to something, so standing hard against a wall fails here.</summary>
+    public static bool HasCapsuleClearance(int[][] grid, Vector2 from, Vector2 to, float radiusCells, out string failureReason)
+    {
+        failureReason = null;
+        if (grid == null)
+        {
+            failureReason = "grid is null";
+            return false;
+        }
+
+        var radius = Math.Max(0f, radiusCells);
+        var reach = (int)Math.Ceiling(radius);
+        var radiusSquared = radius * radius;
+
+        // Half-cell steps, so no cell the hitbox sweeps over can be stepped across.
+        var steps = Math.Max(1, (int)Math.Ceiling(Vector2.Distance(from, to) * 2f));
+        var lastX = int.MinValue;
+        var lastY = int.MinValue;
+
+        for (var i = 0; i <= steps; i++)
+        {
+            var point = from + (to - from) * (i / (float)steps);
+            var cx = (int)Math.Round(point.X);
+            var cy = (int)Math.Round(point.Y);
+
+            // Neighbouring samples usually land on the same cell; checking it again changes nothing.
+            if (cx == lastX && cy == lastY) continue;
+            lastX = cx;
+            lastY = cy;
+
+            for (var dy = -reach; dy <= reach; dy++)
+            {
+                for (var dx = -reach; dx <= reach; dx++)
+                {
+                    if (dx * dx + dy * dy > radiusSquared) continue;
+                    if (IsWalkable(grid, cx + dx, cy + dy)) continue;
+
+                    failureReason = $"cell ({cx + dx},{cy + dy}) is blocked, within {radius:F1} of " +
+                                    (i == 0 ? "the start of the hop" : $"hop point ({cx},{cy})");
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
     public static bool HasCorridorClearance(int[][] grid, Vector2 from, Vector2 to, float marginCells) =>
         HasCorridorClearance(grid, from, to, marginCells, out _);
 

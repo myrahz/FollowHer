@@ -341,16 +341,16 @@ public class FollowManager
         }
     }
 
-    // Blink/teleport movement skills pass OVER obstacles (gaps, chasms, low terrain) but still
-    // can't go through a solid wall - they need to be able to *see* the destination. That's the
-    // targeting (Terrain) LOS layer, which blocks on walls, as opposed to the Walkable layer used
-    // by HasClearLineOfSight (which blocks on anything you can't walk on, e.g. a gap you could
-    // still blink across). A blink must only be used when this is clear.
+    // Blink/teleport movement skills pass OVER obstacles (gaps, chasms, low terrain) but not over
+    // anything solid. On the terrain layer only the value 5 can be flown over (the Jumpable line of
+    // sight), as opposed to the Walkable layer used by HasClearLineOfSight (which blocks on anything
+    // you can't walk on, e.g. a gap you could still blink across). A blink must only be used when
+    // this is clear.
     private bool HasTargetingLineOfSight(Vector2 playerGrid, Vector2 targetGrid)
     {
         try
         {
-            return _lineOfSight.HasLineOfSight(playerGrid, targetGrid, LineOfSightDataType.Terrain);
+            return _lineOfSight.HasLineOfSight(playerGrid, targetGrid, LineOfSightDataType.Jumpable);
         }
         catch
         {
@@ -1082,10 +1082,21 @@ public class FollowManager
         if (player == null) return false;
 
         var distance = Vector3.Distance(player.PosNum, step.World);
-        var skill = UsableJumpSkills().FirstOrDefault(s => s.MaxJumpDistance.Value >= distance);
+        var ready = UsableJumpSkills();
+        var skill = ready.FirstOrDefault(s => s.MaxJumpDistance.Value >= distance);
         if (skill == null)
         {
-            LogDebug($"Jump: no ready skill reaches {distance:F0} units - waiting at the takeoff");
+            // Skills are ready but the landing is out of their reach - the character stopped a little
+            // short of the takeoff. Waiting here would be forever (nothing makes the distance shrink,
+            // and the give-up timer only starts after a cast), so step closer. Only when every skill is
+            // genuinely on cooldown is waiting the right thing.
+            if (ready.Count > 0)
+            {
+                LogDebug($"Jump: ready skills reach at most {ready.Max(s => s.MaxJumpDistance.Value)} but the landing is {distance:F0} away - closing in");
+                return ExecuteMovement(step.World, step.Grid);
+            }
+
+            LogDebug($"Jump: every jump skill is on cooldown ({distance:F0} units to the landing) - waiting at the takeoff");
             StopMovement();
             return false;
         }
@@ -1137,39 +1148,57 @@ public class FollowManager
             // GridPathfinder/HasCorridorClearance also blocks on 5, "Special" tiles), so requiring
             // both could silently reject a corridor the clearance check would otherwise approve.
             var grid = _lineOfSight.GetGridReference(LineOfSightDataType.Walkable);
-            var dashSkill = FollowHer.Instance.Settings.Movement.MovementSkills.Content
-                .FirstOrDefault(s => s.Enabled && s.Name != MoveSkillName && !s.TravelsThroughObstacles &&
-                                      _skillMonitor.CanUseSkill(s));
+            var candidates = FollowHer.Instance.Settings.Movement.MovementSkills.Content
+                .Where(s => s.Enabled && s.Name != MoveSkillName && !s.TravelsThroughObstacles &&
+                            _skillMonitor.CanUseSkill(s))
+                .ToList();
 
             if (grid == null)
             {
                 LogDebug("Movement skill: no terrain grid available yet - skipped");
             }
-            else if (dashSkill == null)
+            else if (candidates.Count == 0)
             {
                 LogDebug("Movement skill: no enabled/off-cooldown ground-dash skill found");
             }
             else
             {
-                // A skill with a known hop only covers that much of the way to the target, so what has
-                // to be clear - and what the distance limits apply to - is the hop, not the whole
-                // distance to a waypoint that is usually several hops off. Without this a bend 300
-                // units ahead vetoed a 100-unit leap.
-                var hop = dashSkill.EffectiveHopDistance;
-                var aimFraction = hop > 0 && worldDistance > hop ? hop / worldDistance : 1f;
-                var hopWorld = worldDistance * aimFraction;
-                var aimGrid = playerGrid + (targetGrid - playerGrid) * aimFraction;
+                // Each skill is judged on its own terms - its hop and its clearance - and the first that
+                // qualifies is used, so a skill with a roomy hitbox being blocked beside a wall doesn't
+                // stop one that fits.
+                foreach (var dashSkill in candidates)
+                {
+                    // A skill with a known hop only covers that much of the way to the target, so what
+                    // has to be clear - and what the distance limits apply to - is the hop, not the
+                    // whole distance to a waypoint that is usually several hops off. Without this a
+                    // bend 300 units ahead vetoed a 100-unit leap.
+                    var hop = dashSkill.EffectiveHopDistance;
+                    var aimFraction = hop > 0 && worldDistance > hop ? hop / worldDistance : 1f;
+                    var hopWorld = worldDistance * aimFraction;
+                    var aimGrid = playerGrid + (targetGrid - playerGrid) * aimFraction;
 
-                if (hopWorld < settings.MovementSkillMinDistance || hopWorld > settings.MovementSkillMaxDistance)
-                {
-                    LogDebug($"Movement skill: hop {hopWorld:F0} outside [{settings.MovementSkillMinDistance},{settings.MovementSkillMaxDistance}] - skipped");
-                }
-                else if (!GridPathfinder.HasCorridorClearance(grid, playerGrid, aimGrid, settings.MovementSkillClearanceMargin, out var failureReason))
-                {
-                    LogDebug($"Movement skill: corridor clearance check failed ({failureReason}); player grid ({playerGrid.X:F1},{playerGrid.Y:F1}) -> hop end ({aimGrid.X:F1},{aimGrid.Y:F1}), margin={settings.MovementSkillClearanceMargin}");
-                }
-                else
-                {
+                    if (hopWorld < settings.MovementSkillMinDistance || hopWorld > settings.MovementSkillMaxDistance)
+                    {
+                        LogDebug($"Movement skill '{dashSkill.Name}': hop {hopWorld:F0} outside [{settings.MovementSkillMinDistance},{settings.MovementSkillMaxDistance}] - skipped");
+                        continue;
+                    }
+
+                    // A per-skill hitbox radius means "too close to anything and it won't fire", so it
+                    // checks a disc swept along the hop, start included. Without one, the global margin
+                    // applies as before (three lines along the hop, endpoints skipped).
+                    var radius = dashSkill.ClearanceRadius.Value;
+                    string failureReason;
+                    var clear = radius > 0f
+                        ? GridPathfinder.HasCapsuleClearance(grid, playerGrid, aimGrid, radius, out failureReason)
+                        : GridPathfinder.HasCorridorClearance(grid, playerGrid, aimGrid, settings.MovementSkillClearanceMargin, out failureReason);
+
+                    if (!clear)
+                    {
+                        LogDebug($"Movement skill '{dashSkill.Name}': clearance check failed ({failureReason}); player grid ({playerGrid.X:F1},{playerGrid.Y:F1}) -> hop end ({aimGrid.X:F1},{aimGrid.Y:F1}), " +
+                                 (radius > 0f ? $"hitbox radius={radius:F1}" : $"margin={settings.MovementSkillClearanceMargin}"));
+                        continue;
+                    }
+
                     return new MovementChoice(dashSkill, aimFraction);
                 }
             }
