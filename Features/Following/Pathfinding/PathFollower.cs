@@ -87,6 +87,10 @@ public readonly struct PathStep
 /// pathfinding rather than two copies of it - which is what makes the navigator a real test of what
 /// following actually does. It deliberately does not issue any input: the caller decides what to do
 /// with the returned step (FollowManager.ExecuteMovement owns movement-skill selection).</summary>
+/// <summary>What the configured jump skills can do, for the path planner: the longest jump in world
+/// units (0 = none) and what a jump is worth to the planner, in grid cells.</summary>
+public readonly record struct JumpCapability(float Range, int CostCells);
+
 public class PathFollower
 {
     // Fixed routes are walked straight along, so the only reason to replan is having left the route.
@@ -134,14 +138,18 @@ public class PathFollower
     private bool _currentPathIsPartial;
     private DateTime _nextPathRecomputeAt = DateTime.MinValue;
 
-    // Jump planning. The provider reports the longest jump (world units) any usable skill can make
-    // right now, 0 when none - supplied by whoever owns the skills, so this class stays free of
-    // input and skill state.
-    private readonly Func<float> _jumpRangeProvider;
+    // Jump planning. The provider reports what the configured jump skills can do - the longest jump
+    // (world units) and what a jump is worth to the planner - supplied by whoever owns the skills, so
+    // this class stays free of input and skill state. It describes the skills that are set up, not the
+    // ones off cooldown this instant: a skill on a 3 s cooldown is still a good plan if it will be back
+    // by the time the character reaches the takeoff, and if it isn't, ReportJumpUnavailable replans.
+    private readonly Func<JumpCapability> _jumpProvider;
     private readonly HashSet<(int x, int y)> _jumpLandings = new();
     private readonly HashSet<(int x, int y)> _bannedLandings = new();
     private float _jumpRangeAtPlan;
     private DateTime? _jumpFirstAttemptAt;
+    private DateTime? _jumpWaitStartedAt;
+    private DateTime _jumpsSuppressedUntil = DateTime.MinValue;
 
     // How close to the takeoff cell the jump is taken from. Much tighter than the normal waypoint
     // tolerance: a jump aimed from 300 units back would start from the wrong side of the obstacle.
@@ -158,26 +166,60 @@ public class PathFollower
     // by something the grids don't show) - ban that landing and plan around it.
     private const int JumpGiveUpMs = 2500;
 
+    // After giving up on a jump because its skill never came off cooldown, plan without jumps for this
+    // long. Banning only the one landing would just pick the next cell along the same gap.
+    private const int JumpSuppressMs = 8000;
+
     private readonly PathingMode _mode;
 
     public PathFollower(GameController gameController, LineOfSight lineOfSight, PathingMode mode,
-        Func<float> jumpRangeProvider = null)
+        Func<JumpCapability> jumpProvider = null)
     {
         _gameController = gameController;
         _lineOfSight = lineOfSight;
         _mode = mode;
-        _jumpRangeProvider = jumpRangeProvider;
+        _jumpProvider = jumpProvider;
     }
 
     /// <summary>Call when a jump skill was actually used for the current <see cref="PathStepKind.Jump"/>
     /// step. Starts the clock that bans the landing if the character doesn't arrive.</summary>
-    public void ReportJumpAttempt() => _jumpFirstAttemptAt ??= DateTime.Now;
-
-    private float CurrentJumpRange()
+    public void ReportJumpAttempt()
     {
-        if (_jumpRangeProvider == null || !FollowHer.Instance.Settings.Movement.EnableJumpPathing) return 0f;
-        return _jumpRangeProvider();
+        _jumpFirstAttemptAt ??= DateTime.Now;
+        _jumpWaitStartedAt = null;
     }
+
+    /// <summary>Call while standing at a takeoff with no skill that can make the jump ready. Gives the
+    /// skill up to <paramref name="waitBudgetMs"/> to come off cooldown; after that the jump is dropped
+    /// and the route replanned on foot (jumps stay off for a few seconds so it doesn't just plan the
+    /// same gap again). Returns whether it gave up - the caller should then ask for a new step.</summary>
+    public bool ReportJumpUnavailable(int waitBudgetMs)
+    {
+        _jumpWaitStartedAt ??= DateTime.Now;
+        if ((DateTime.Now - _jumpWaitStartedAt.Value).TotalMilliseconds < waitBudgetMs) return false;
+
+        if (_currentPath != null && _currentPathIndex < _currentPath.Count)
+        {
+            _bannedLandings.Add(_currentPath[_currentPathIndex]);
+        }
+
+        _jumpsSuppressedUntil = DateTime.Now.AddMilliseconds(JumpSuppressMs);
+        _currentPath = null;
+        _currentPathTarget = null;
+        _jumpWaitStartedAt = null;
+        _jumpFirstAttemptAt = null;
+        _nextPathRecomputeAt = DateTime.MinValue;
+        return true;
+    }
+
+    private JumpCapability CurrentJump()
+    {
+        if (_jumpProvider == null || !FollowHer.Instance.Settings.Movement.EnableJumpPathing) return default;
+        if (DateTime.Now < _jumpsSuppressedUntil) return default;
+        return _jumpProvider();
+    }
+
+    private float CurrentJumpRange() => CurrentJump().Range;
 
     public int WaypointCount => _currentPath?.Count ?? 0;
     public int RemainingWaypoints => _currentPath == null ? 0 : Math.Max(0, _currentPath.Count - _currentPathIndex);
@@ -267,7 +309,8 @@ public class PathFollower
                     return PathStep.NoTerrainData(targetWorld, targetGrid);
                 }
 
-                var jumpRange = CurrentJumpRange();
+                var jump = CurrentJump();
+                var jumpRange = jump.Range;
                 GridPathfinder.JumpOptions jumpOptions = null;
                 if (jumpRange > 0f)
                 {
@@ -283,7 +326,7 @@ public class PathFollower
                             // more), or a jump at the very edge of its range is offered, the character
                             // stops a few units short, no skill reaches, and it waits there forever.
                             MaxCells = (int)((jumpRange - JumpTakeoffWorldDistance - JumpReachMarginWorld) / GridToWorldMultiplier),
-                            Cost = FollowHer.Instance.Settings.Movement.JumpPathCost.Value * 10,
+                            Cost = jump.CostCells * 10,
                             BannedLandings = _bannedLandings,
                         };
                     }
@@ -349,6 +392,7 @@ public class PathFollower
                     if (distance <= JumpLandedWorldDistance)
                     {
                         _jumpFirstAttemptAt = null;
+                        _jumpWaitStartedAt = null;
                         _currentPathIndex++;
                         continue;
                     }
@@ -479,6 +523,8 @@ public class PathFollower
         _bannedLandings.Clear();
         _jumpRangeAtPlan = 0f;
         _jumpFirstAttemptAt = null;
+        _jumpWaitStartedAt = null;
+        _jumpsSuppressedUntil = DateTime.MinValue;
         _nextFullSearchAt = DateTime.MinValue;
     }
 
@@ -502,8 +548,7 @@ public class PathFollower
         // budget ran out before the target, so go again from here.
         if (_currentPathIndex >= _currentPath.Count) return _currentPathIsPartial;
 
-        // A skill came off cooldown since planning without one, so a jump shortcut may exist now.
-        if (_jumpRangeAtPlan <= 0f && DateTime.Now >= _nextPathRecomputeAt && CurrentJumpRange() > 0f) return true;
+        if (JumpSetupChanged()) return true;
 
         // Off the route: knocked back, teleported, or a jump that fell short. Not checked while the
         // next node is a jump landing - the takeoff is legitimately a whole jump away from it.
@@ -518,16 +563,30 @@ public class PathFollower
         return false;
     }
 
+    /// <summary>Whether the jump skills available now differ from what the route was planned with, so
+    /// the route should be planned again while walking it: a jump skill appeared (a shortcut may exist
+    /// now), or the reach shrank or vanished (skill disabled, swapped off the bar, left for a town, jumps
+    /// switched off) and the route may lead to a jump nothing can make. A skill merely being on cooldown
+    /// is not a change - that is waited out at the takeoff, within a budget.</summary>
+    private bool JumpSetupChanged()
+    {
+        if (DateTime.Now < _nextPathRecomputeAt) return false;
+
+        var range = CurrentJumpRange();
+        if (_jumpRangeAtPlan <= 0f) return range > 0f;
+
+        // Smaller than planned: the planned jumps may be out of reach now. (A little slack for the
+        // rounding in how the range is derived.)
+        return range < _jumpRangeAtPlan - 1f;
+    }
+
     private bool NeedsChaseRecompute((int x, int y) target)
     {
         if (_currentPathTarget == null) return true;
         if (_currentPath == null) return DateTime.Now >= _nextPathRecomputeAt;
         if (_currentPathIndex >= _currentPath.Count) return true;
 
-        // The route was planned while no jump skill was ready; one is now, so a shortcut may exist.
-        // Only that direction triggers a replan - a skill going on cooldown mid-route must not throw
-        // away a jump we're already walking to, we'd rather wait for it.
-        if (_jumpRangeAtPlan <= 0f && DateTime.Now >= _nextPathRecomputeAt && CurrentJumpRange() > 0f) return true;
+        if (JumpSetupChanged()) return true;
 
         var drift = Vector2.Distance(
             new Vector2(target.x, target.y),

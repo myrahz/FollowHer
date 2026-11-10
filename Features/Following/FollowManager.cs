@@ -95,12 +95,12 @@ public class FollowManager
         _skillHandler = skillHandler;
         _skillMonitor = skillMonitor;
         _lineOfSight = new LineOfSight(gameController);
-        _pathFollower = new PathFollower(gameController, _lineOfSight, PathingMode.Chase, LongestUsableJumpWorld);
+        _pathFollower = new PathFollower(gameController, _lineOfSight, PathingMode.Chase, CurrentJumpCapability);
 
         // Its own PathFollower, so switching between following and manual navigation never inherits
         // the other's cached route.
         Navigation = new NavigationManager(gameController, this,
-            new PathFollower(gameController, _lineOfSight, PathingMode.Fixed, LongestUsableJumpWorld));
+            new PathFollower(gameController, _lineOfSight, PathingMode.Fixed, CurrentJumpCapability));
         FollowHer.Instance.Navigation = Navigation;
 
         EventBus.Instance.Subscribe<RenderEvent>(HandleRender);
@@ -921,7 +921,7 @@ public class FollowManager
         return _gameController.Player?.GetComponent<Actor>()?.isMoving ?? false;
     }
 
-    internal bool ExecuteMovement(Vector3 targetWorldPosition, Vector2? targetGridPosition = null, ActiveSkill forcedSkill = null)
+    internal bool ExecuteMovement(Vector3 targetWorldPosition, Vector2? targetGridPosition = null, MovementSkill forcedSkill = null)
     {
         var screenPos = _gameController.IngameState.Camera.WorldToScreen(targetWorldPosition);
         if (screenPos == Vector2.Zero) return false;
@@ -971,22 +971,19 @@ public class FollowManager
         return true;
     }
 
-    // Movement skills come in two mechanically different flavors, and each setting now maps onto
-    // exactly one of them (see ActiveSkill.TravelsThroughObstacles):
-    //   - DashEnabled -> blink-type skills (Frostblink/FlameDash/LightningWarp/BlinkArrow), which
-    //     pass OVER obstacles but still need targeting LOS to the destination (they can't go through
-    //     a solid wall). Used to cross something unwalkable you can still see across (a gap), not as
-    //     a plain speed boost on ground that's already clear.
-    //   - PreferMovementSkillsForTravel -> ground-dash skills (Shield Charge/Whirling Blades),
-    //     which collide with obstacles like a moving hitbox - a thin center-line LOS pass isn't
-    //     enough to guarantee they won't clip a corner, so they additionally require a full
-    //     corridor clearance check (GridPathfinder.HasCorridorClearance) across the configured
-    //     hitbox margin, and are only used when the path is already clear - never to punch
-    //     through something, since they physically can't.
-    // When LOS to the leader is blocked, decide whether to blink straight to them instead of
-    // taking the walkable detour. Returns the blink skill to use, or null to fall back to
-    // pathfinding. Only evaluated when a blink skill is actually off cooldown, so the extra A*
-    // done here to measure the detour is infrequent rather than every tick.
+    // Movement skills come in two mechanically different flavors, told apart by
+    // MovementSkill.TravelsThroughObstacles, and each is switched on per skill:
+    //   - blink-type skills (Frostblink/FlameDash/LightningWarp/BlinkArrow) pass OVER obstacles but
+    //     still need targeting LOS to the destination (they can't go through a solid wall). With "Use To
+    //     Cross Blocked Paths" they cross something unwalkable you can still see across (a gap), not
+    //     as a plain speed boost on ground that's already clear.
+    //   - ground-dash skills (Shield Charge/Whirling Blades/Leap Slam) collide with obstacles like a
+    //     moving hitbox, so a thin center-line LOS pass isn't enough to guarantee they won't clip a
+    //     corner: with "Use For Travel" they additionally need the skill's own hitbox clearance along
+    //     the hop, and are only used when the path is already clear - never to punch through
+    //     something, since they physically can't.
+    // Everything else - minimum distance, how far one use carries, hitbox clearance, the shortcut
+    // ratio - is read from the skill itself, because each skill differs.
     // Skills (including movement skills) can't be used in town/hideout, so never pick one there.
     private bool IsInTownOrHideout()
     {
@@ -994,21 +991,32 @@ public class FollowManager
         return area != null && (area.IsTown || area.IsHideout);
     }
 
-    private ActiveSkill TryGetDirectDashShortcut(Entity player, Entity leaderEntity, MovementSettings settings)
+    private IEnumerable<MovementSkill> EnabledMovementSkills() =>
+        FollowHer.Instance.Settings.Movement.MovementSkills.Content
+            .Where(s => s.Enabled && s.Name != MoveSkillName);
+
+    /// <summary>The distance one use of <paramref name="skill"/> actually covers toward something
+    /// <paramref name="distance"/> away: all of it if it is within the skill's reach (or the reach is
+    /// unknown), otherwise the reach.</summary>
+    private static float HopFor(MovementSkill skill, float distance)
     {
-        if (!settings.DashEnabled) return null;
+        var reach = skill.EffectiveHopDistance;
+        return reach > 0 && distance > reach ? reach : distance;
+    }
+
+    private MovementSkill TryGetDirectDashShortcut(Entity player, Entity leaderEntity, MovementSettings settings)
+    {
         if (IsInTownOrHideout()) return null;
 
         // Only a blink-type skill can shortcut through the obstacle blocking LOS; a ground dash
         // would just collide with it.
-        var blinkSkill = FollowHer.Instance.Settings.Movement.MovementSkills.Content
-            .FirstOrDefault(s => s.Enabled && s.Name != MoveSkillName && s.TravelsThroughObstacles &&
-                                  _skillMonitor.CanUseSkill(s));
-        if (blinkSkill == null) return null;
-
         var directWorld = Vector3.Distance(player.PosNum, leaderEntity.PosNum);
-        if (directWorld < settings.MovementSkillMinDistance || directWorld > settings.MovementSkillMaxDistance)
-            return null;
+        var blinkSkill = EnabledMovementSkills()
+            .FirstOrDefault(s => s.TravelsThroughObstacles && s.UseToCrossBlockedPaths &&
+                                 _skillMonitor.CanUseSkill(s) &&
+                                 directWorld >= s.MinDistance.Value &&
+                                 (s.EffectiveHopDistance <= 0 || directWorld <= s.EffectiveHopDistance));
+        if (blinkSkill == null) return null;
 
         // A blink can only go where it can see. Without this it would try to blink straight into a
         // wall whenever the walkable path was long - it passes over gaps, not through solid terrain.
@@ -1031,9 +1039,9 @@ public class FollowManager
         if (path == null || path.Count == 0) return blinkSkill;
 
         var ratio = PathGridLength(path) / directGrid;
-        if (ratio >= settings.DashShortcutPathRatio)
+        if (ratio >= blinkSkill.ShortcutPathRatio.Value)
         {
-            LogDebug($"Dash shortcut: walkable route {ratio:F1}x the straight-line distance (>= {settings.DashShortcutPathRatio:F1}) - blinking");
+            LogDebug($"Dash shortcut: walkable route {ratio:F1}x the straight-line distance (>= {blinkSkill.ShortcutPathRatio.Value:F1}) - blinking with '{blinkSkill.Name}'");
             return blinkSkill;
         }
 
@@ -1052,30 +1060,37 @@ public class FollowManager
         return total;
     }
 
-    // Movement skills the path planner may jump with right now: enabled, given a jump range, and off
-    // cooldown. Ordered shortest range first so a short hop doesn't burn the longest-range skill.
-    private List<ActiveSkill> UsableJumpSkills() =>
-        FollowHer.Instance.Settings.Movement.MovementSkills.Content
-            .Where(s => s.Enabled && s.Name != MoveSkillName && s.MaxJumpDistance.Value > 0 &&
-                        _skillMonitor.CanUseSkill(s))
+    // Skills the path planner may jump with: enabled and given a jump range. Whether one is off
+    // cooldown right now is a separate question (UsableJumpSkills), answered at the takeoff.
+    private List<MovementSkill> ConfiguredJumpSkills() =>
+        EnabledMovementSkills().Where(s => s.MaxJumpDistance.Value > 0).ToList();
+
+    // The configured jump skills that are off cooldown now. Ordered shortest range first so a short
+    // hop doesn't burn the longest-range skill.
+    private List<MovementSkill> UsableJumpSkills() =>
+        ConfiguredJumpSkills()
+            .Where(s => _skillMonitor.CanUseSkill(s))
             .OrderBy(s => s.MaxJumpDistance.Value)
             .ToList();
 
-    /// <summary>The longest jump (world units) any usable skill can make right now, 0 if none or in a
-    /// town. This is what the path planner is told it may jump, so it never plans a jump nothing can
-    /// make.</summary>
-    private float LongestUsableJumpWorld()
+    /// <summary>What the path planner is told it may jump: the longest reach of any configured jump
+    /// skill, and the cheapest planner cost among them. Describes the setup, not the cooldowns - a
+    /// skill that is down for 3 s is back by the time the takeoff is reached, and when it isn't,
+    /// <see cref="ExecuteJump"/> reports it and the route is replanned. Nothing in town.</summary>
+    private JumpCapability CurrentJumpCapability()
     {
-        if (IsInTownOrHideout()) return 0f;
+        if (IsInTownOrHideout()) return default;
 
-        var skills = UsableJumpSkills();
-        return skills.Count == 0 ? 0f : skills.Max(s => s.MaxJumpDistance.Value);
+        var skills = ConfiguredJumpSkills();
+        return skills.Count == 0
+            ? default
+            : new JumpCapability(skills.Max(s => s.MaxJumpDistance.Value), skills.Min(s => s.JumpPathCost.Value));
     }
 
     /// <summary>Takes a planned jump: aims the shortest-range usable skill that reaches the landing
-    /// at it. If none is ready (cooldown, or the one that was planned with is down), holds still at
-    /// the takeoff and waits - the jump was chosen over a long walk, so it's worth waiting out.
-    /// Returns whether a skill was used.</summary>
+    /// at it. If none is ready (cooldown) it holds at the takeoff for the longest wait any jump skill
+    /// allows, then gives the jump up and lets the route be replanned on foot. Returns whether a skill
+    /// was used.</summary>
     internal bool ExecuteJump(PathStep step, PathFollower follower)
     {
         var player = _gameController.Player;
@@ -1088,15 +1103,26 @@ public class FollowManager
         {
             // Skills are ready but the landing is out of their reach - the character stopped a little
             // short of the takeoff. Waiting here would be forever (nothing makes the distance shrink,
-            // and the give-up timer only starts after a cast), so step closer. Only when every skill is
-            // genuinely on cooldown is waiting the right thing.
+            // and the give-up timer only starts after a cast), so step closer.
             if (ready.Count > 0)
             {
                 LogDebug($"Jump: ready skills reach at most {ready.Max(s => s.MaxJumpDistance.Value)} but the landing is {distance:F0} away - closing in");
                 return ExecuteMovement(step.World, step.Grid);
             }
 
-            LogDebug($"Jump: every jump skill is on cooldown ({distance:F0} units to the landing) - waiting at the takeoff");
+            // Nothing is ready: a cooldown, or no jump skill is set up any more. Wait the skills' own
+            // allowance for one to come back, then plan around the gap instead.
+            var configured = ConfiguredJumpSkills();
+            var waitMs = configured.Count == 0 ? 0 : configured.Max(s => s.CooldownWaitMs.Value);
+            if (follower.ReportJumpUnavailable(waitMs))
+            {
+                LogDebug(configured.Count == 0
+                    ? $"Jump: no jump skill is set up - replanning on foot ({distance:F0} units to the landing)"
+                    : $"Jump: no jump skill came off cooldown within {waitMs} ms - replanning on foot");
+                return false;
+            }
+
+            LogDebug($"Jump: every jump skill is on cooldown ({distance:F0} units to the landing) - waiting at the takeoff (up to {waitMs} ms)");
             StopMovement();
             return false;
         }
@@ -1110,12 +1136,12 @@ public class FollowManager
 
     /// <summary>A movement skill chosen for a step, and how far along the line to the step's target to
     /// aim it: 1 = at the target, less = a point that far along (its hop distance).</summary>
-    private readonly record struct MovementChoice(ActiveSkill Skill, float AimFraction);
+    private readonly record struct MovementChoice(MovementSkill Skill, float AimFraction);
 
     private MovementChoice? TryGetMovementSkill(Vector2 playerGrid, Vector2 targetGrid)
     {
-        var settings = FollowHer.Instance.Settings.Movement;
-        if (!settings.DashEnabled && !settings.PreferMovementSkillsForTravel) return null;
+        var skills = EnabledMovementSkills().ToList();
+        if (!skills.Any(s => s.TravelsThroughObstacles ? s.UseToCrossBlockedPaths : s.UseForTravel)) return null;
         if (IsInTownOrHideout()) return null;
 
         // Compared in world units (like every other distance setting in this plugin), not grid
@@ -1126,77 +1152,70 @@ public class FollowManager
         // Blink is for crossing something you can't walk through but CAN see across (a gap/chasm):
         // walkable LOS blocked, but targeting LOS clear. Requiring targeting LOS here stops it from
         // trying to blink into a wall/corner (walkable AND targeting both blocked).
-        if (settings.DashEnabled && !hasClearLineOfSight && HasTargetingLineOfSight(playerGrid, targetGrid))
+        var blinkSkills = skills.Where(s => s.TravelsThroughObstacles && s.UseToCrossBlockedPaths).ToList();
+        if (blinkSkills.Count > 0 && !hasClearLineOfSight && HasTargetingLineOfSight(playerGrid, targetGrid))
         {
-            if (worldDistance < settings.MovementSkillMinDistance || worldDistance > settings.MovementSkillMaxDistance)
+            foreach (var blinkSkill in blinkSkills.Where(s => _skillMonitor.CanUseSkill(s)))
             {
-                LogDebug($"Movement skill: blink distance {worldDistance:F0} outside [{settings.MovementSkillMinDistance},{settings.MovementSkillMaxDistance}] - skipped");
-                return null;
+                var hopWorld = HopFor(blinkSkill, worldDistance);
+                if (hopWorld < blinkSkill.MinDistance.Value)
+                {
+                    LogDebug($"Movement skill '{blinkSkill.Name}': blink distance {hopWorld:F0} below its minimum {blinkSkill.MinDistance.Value} - skipped");
+                    continue;
+                }
+
+                return new MovementChoice(blinkSkill, hopWorld < worldDistance ? hopWorld / worldDistance : 1f);
             }
 
-            var blinkSkill = FollowHer.Instance.Settings.Movement.MovementSkills.Content
-                .FirstOrDefault(s => s.Enabled && s.Name != MoveSkillName && s.TravelsThroughObstacles &&
-                                      _skillMonitor.CanUseSkill(s));
-            if (blinkSkill != null) return new MovementChoice(blinkSkill, 1f);
-            LogDebug("Movement skill: DashEnabled path (walkable blocked, target visible) found no enabled/off-cooldown blink-type skill");
+            LogDebug("Movement skill: walkable path blocked and target visible, but no blink skill is off cooldown and long enough");
         }
 
-        if (settings.PreferMovementSkillsForTravel)
+        var dashCandidates = skills.Where(s => !s.TravelsThroughObstacles && s.UseForTravel).ToList();
+        if (dashCandidates.Count > 0)
         {
-            // Gate on the corridor-clearance check alone, not also on hasClearLineOfSight - the
-            // two use different walkability rules (LineOfSight only blocks on grid value 4;
-            // GridPathfinder/HasCorridorClearance also blocks on 5, "Special" tiles), so requiring
-            // both could silently reject a corridor the clearance check would otherwise approve.
+            // Gate on the clearance check alone, not also on hasClearLineOfSight - the two use
+            // different walkability rules (LineOfSight only blocks on grid value 4; GridPathfinder
+            // blocks on 0), so requiring both could silently reject a corridor the clearance check
+            // would otherwise approve.
             var grid = _lineOfSight.GetGridReference(LineOfSightDataType.Walkable);
-            var candidates = FollowHer.Instance.Settings.Movement.MovementSkills.Content
-                .Where(s => s.Enabled && s.Name != MoveSkillName && !s.TravelsThroughObstacles &&
-                            _skillMonitor.CanUseSkill(s))
-                .ToList();
+            var ready = dashCandidates.Where(s => _skillMonitor.CanUseSkill(s)).ToList();
 
             if (grid == null)
             {
                 LogDebug("Movement skill: no terrain grid available yet - skipped");
             }
-            else if (candidates.Count == 0)
+            else if (ready.Count == 0)
             {
                 LogDebug("Movement skill: no enabled/off-cooldown ground-dash skill found");
             }
             else
             {
-                // Each skill is judged on its own terms - its hop and its clearance - and the first that
-                // qualifies is used, so a skill with a roomy hitbox being blocked beside a wall doesn't
-                // stop one that fits.
-                foreach (var dashSkill in candidates)
+                // Each skill is judged on its own terms - its hop, its minimum and its clearance - and
+                // the first that qualifies is used, so a skill with a roomy hitbox being blocked beside
+                // a wall doesn't stop one that fits.
+                foreach (var dashSkill in ready)
                 {
                     // A skill with a known hop only covers that much of the way to the target, so what
-                    // has to be clear - and what the distance limits apply to - is the hop, not the
-                    // whole distance to a waypoint that is usually several hops off. Without this a
-                    // bend 300 units ahead vetoed a 100-unit leap.
-                    var hop = dashSkill.EffectiveHopDistance;
-                    var aimFraction = hop > 0 && worldDistance > hop ? hop / worldDistance : 1f;
-                    var hopWorld = worldDistance * aimFraction;
+                    // has to be clear - and what the minimum applies to - is the hop, not the whole
+                    // distance to a waypoint that is usually several hops off. Without this a bend 300
+                    // units ahead vetoed a 100-unit leap.
+                    var hopWorld = HopFor(dashSkill, worldDistance);
+                    var aimFraction = hopWorld < worldDistance ? hopWorld / worldDistance : 1f;
                     var aimGrid = playerGrid + (targetGrid - playerGrid) * aimFraction;
 
-                    var minDistance = Math.Max(settings.MovementSkillMinDistance, dashSkill.MinDistance.Value);
-                    if (hopWorld < minDistance || hopWorld > settings.MovementSkillMaxDistance)
+                    var minDistance = dashSkill.MinDistance.Value;
+                    if (hopWorld < minDistance)
                     {
-                        LogDebug($"Movement skill '{dashSkill.Name}': hop {hopWorld:F0} outside [{minDistance},{settings.MovementSkillMaxDistance}] - skipped");
+                        LogDebug($"Movement skill '{dashSkill.Name}': hop {hopWorld:F0} below its minimum {minDistance} - skipped");
                         continue;
                     }
 
-                    // A per-skill hitbox radius means "too close to anything and it won't fire", so it
-                    // checks a disc swept along the hop, start included. Without one, the global margin
-                    // applies as before (three lines along the hop, endpoints skipped).
+                    // The skill's hitbox radius means "too close to anything and it won't fire", so it
+                    // checks a disc swept along the hop, start included.
                     var radius = dashSkill.ClearanceRadius.Value;
-                    string failureReason;
-                    var clear = radius > 0f
-                        ? GridPathfinder.HasCapsuleClearance(grid, playerGrid, aimGrid, radius, out failureReason)
-                        : GridPathfinder.HasCorridorClearance(grid, playerGrid, aimGrid, settings.MovementSkillClearanceMargin, out failureReason);
-
-                    if (!clear)
+                    if (!GridPathfinder.HasCapsuleClearance(grid, playerGrid, aimGrid, radius, out var failureReason))
                     {
-                        LogDebug($"Movement skill '{dashSkill.Name}': clearance check failed ({failureReason}); player grid ({playerGrid.X:F1},{playerGrid.Y:F1}) -> hop end ({aimGrid.X:F1},{aimGrid.Y:F1}), " +
-                                 (radius > 0f ? $"hitbox radius={radius:F1}" : $"margin={settings.MovementSkillClearanceMargin}"));
+                        LogDebug($"Movement skill '{dashSkill.Name}': clearance check failed ({failureReason}); player grid ({playerGrid.X:F1},{playerGrid.Y:F1}) -> hop end ({aimGrid.X:F1},{aimGrid.Y:F1}), hitbox radius={radius:F1}");
                         continue;
                     }
 

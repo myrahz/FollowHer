@@ -266,20 +266,13 @@ See [Runtime controls](#runtime-controls-hotkeys--overlay). Precision Key / Prec
 | **Transition Search Radius** | 200 | How far from where the leader was last seen to look for the transition they took. Raise this if the follower reaches the spot but never finds the transition. |
 | **Close Follow** | on | Keep tight to the leader (use Keep Within Distance) instead of only closing large gaps. |
 | **Disable Movement In Town** | off | Don't follow while in a town/hideout (still follows the leader *out* of town). |
-| **Dash Enabled** | off | Use a blink-type movement skill to punch through a blocked path. See [Movement skills](#movement-skills). |
-| **Prefer Movement Skills For Travel** | off | Use a ground-dash skill to travel faster on already-clear paths. See [Movement skills](#movement-skills). |
-| **Movement Skill Clearance Margin** | 1.5 | Grid cells of side clearance a ground-dash needs before it's used (hitbox width). |
-| **Dash Shortcut Path Ratio** | 1.5 | When LOS to the leader is blocked, blink straight to them instead of pathfinding if the walkable route is at least this many times longer than the straight line. `1` = always blink when blocked; higher = only to skip a big detour. |
-| **Movement Skill Min Distance** | 100 | Don't use a movement skill for a hop shorter than this. |
-| **Movement Skill Max Distance** | 1000 | Don't use a movement skill for a hop longer than this. |
 | **Max Waypoint Distance** | 400 | How far apart path waypoints may be placed (world units) where the way ahead is clear. Corners keep tight waypoints on their own; this only stretches the straight sections. See [Movement skills](#movement-skills). |
 | **Path Straightness** | 4 | How strongly the route prefers long straight runs over bends (`0` = off, `10` = strongest). Routes of equal length often differ only in how many times they turn; this charges a cost per bend, so the route holds a heading and bends less, at the price of the odd small detour. See [Straighter paths and hop-sized aiming](#straighter-paths-and-hop-sized-aiming). |
 | **Wall Clearance** | 3 | Grid cells (~11 world units each) the path tries to keep off walls. Shortest-path routes hug walls, which leaves ground dashes no clear corridor; this makes A* pay extra for cells near walls and stops waypoint smoothing from cutting corners. Soft preference - a narrower gap is still used if it's the only way. `0` = plain shortest path. |
 | **Plan Jumps In Pathfinding** | on | Let the path jump over gaps and low obstacles with movement skills (Leap Slam, Flame Dash, Frostblink) when that beats the walk. See [Jumping obstacles](#jumping-obstacles). |
-| **Jump Cost (cells)** | 20 | How much walking one jump is worth to the planner. A jump is taken only when the walkable detour is longer than the jump plus this. |
 | **Input Frequency (ms)** | 50 | Minimum delay between successive movement inputs. |
 | **Enable Pathfinding Fallback** | on | Use A* pathfinding around obstacles. Off = always walk straight at the target. |
-| **Movement Skills** | — | Auto-discovered movement skills with per-skill options. |
+| **Movement Skills** | — | Auto-discovered movement skills. Everything that depends on the skill - roles, distances, hitbox, jump reach and cost - is set per skill; see [Movement skills](#movement-skills). |
 
 **Movement > Visual**
 
@@ -397,12 +390,8 @@ Controls how the combat engine chooses which monster to hit.
 |---|---|---|
 | **Enable With Fullscreen UI** | off | Keep running while a fullscreen panel is open. |
 | **Enable With Left Panel** / **Enable With Right Panel** | off | Keep running with the inventory/stash side panels open. |
-| **Safe Zone > Left/Right/Top/Bottom Margin** | 2/3/8/15 | Screen-edge margins (%) the cursor stays within. |
 
-**Render > Cursor**
-
-| Setting | Default | Description |
-|---|---|---|
+---|---|---|
 | **Targeting Radius** | 10 | Cursor placement tolerance around the target. |
 | **Enable Randomization** / **Randomization Factor** | off / 0.5 | Jitter the aim point. |
 | **Limit Cursor Range** / **Max Cursor Range** | off / 300 | Cap how far from center the cursor may be placed. |
@@ -424,22 +413,35 @@ The teleport confirmation window is treated as modal — it's resolved before an
 
 ## Movement skills
 
-Two mechanically different kinds of movement skill, each controlled by its own setting:
+Movement skills are different from each other - how far they carry you, how close to a wall they will still fire, whether they cross gaps, how long they take to come back - so every one of those settings lives on the skill itself, in the **Movement Skills** list. The list shows only the movement settings, and the combat skill list only the combat ones.
 
-| | **Dash Enabled** | **Prefer Movement Skills For Travel** |
+Two mechanically different kinds of movement skill, told apart by **Travels Through Obstacles** (auto-set on discovery for known skills) and switched on per skill:
+
+| | **Use To Cross Blocked Paths** | **Use For Travel** |
 |---|---|---|
-| Skill type | Blink (Frostblink, Flame Dash, Lightning Warp, Blink Arrow) — pass through obstacles | Ground-dash (Shield Charge, Whirling Blades) — collide with obstacles |
-| Fires when the path is | **Blocked** | **Clear** |
-| Purpose | Punch through terrain | Travel faster |
-| Gate | Line of sight to target is blocked | Full corridor-clearance check passes |
+| Skill type | Blink (Frostblink, Flame Dash, Lightning Warp, Blink Arrow) — pass over obstacles | Ground-dash (Shield Charge, Whirling Blades, Leap Slam) — collide with obstacles |
+| Fires when the path is | **Blocked** (but you can see across) | **Clear** |
+| Purpose | Cross a gap or punch past a detour | Travel faster |
+| Gate | Line of sight to target is blocked, targeting LOS is clear | The skill's Hitbox Clearance passes along the hop |
 
-Both are bounded by **Movement Skill Min/Max Distance**. Which bucket a skill lands in is decided by its **Travels Through Obstacles** flag (auto-set on discovery for known skills).
+Per-skill settings:
 
-**Dash Shortcut Path Ratio** ties into Dash Enabled: when LOS to the leader is blocked and a blink skill is ready, the follower compares the walkable detour to the straight-line distance and blinks straight to the leader if the detour is at least that many times longer — instead of pathfinding the long way around.
+| Setting | What it does |
+|---|---|
+| **Use To Cross Blocked Paths** / **Use For Travel** | The two roles above. They replace the old global *Dash Enabled* and *Prefer Movement Skills For Travel*. |
+| **Travel Distance Per Use** | How far one use carries you. The cursor is aimed this far ahead; blinks and hops never aim beyond it. |
+| **Minimum Distance Per Use** | Don't use the skill to cover less than this; the character walks instead. Measure it: do the shortest use and compare positions (Shield Charge ≈ 260). |
+| **Hitbox Clearance (cells)** | Radius around the character and along the hop that must be walkable. See [Per-skill hitbox clearance](#per-skill-hitbox-clearance). |
+| **Max Jump Distance** | Reach when planning jumps over gaps. `0` = never planned for jumps - leave it `0` on skills that collide with walls. |
+| **Jump Path Cost (cells)** | What a jump with this skill is worth to the planner: a jump is only taken when the walk is longer than the jump plus this. The planner uses the cheapest cost among the skills that can jump. |
+| **Wait For Cooldown (ms)** | How long to wait at a takeoff for this skill to come back before giving up on the jump. |
+| **Shortcut Path Ratio** | Blinks only. When LOS to the leader is blocked, blink straight to them if the walkable route is at least this many times longer than the straight line. `1` = always; higher = only to skip a big detour. |
+
+The old global *Movement Skill Min/Max Distance*, *Clearance Margin*, *Dash Shortcut Path Ratio* and *Jump Cost* settings are gone. The first time a skill is loaded they are copied onto it (and the known per-skill values are used for Leap Slam and Shield Charge), so existing setups carry over. The maximum is no longer a setting: it is the skill's own travel distance.
 
 ### Jumping obstacles
 
-Leap Slam, Flame Dash and Frostblink can carry you over a gap or low obstacle that you can't walk across. With **Plan Jumps In Pathfinding** on, A* treats those as extra moves: from a cell beside an obstacle it looks along 16 directions for the first walkable cell past it, provided nothing along the way blocks the **targeting** layer (a solid wall stops a jump; a chasm doesn't). The route takes the jump when the walkable detour is longer than the jump plus **Jump Cost**.
+Leap Slam, Flame Dash and Frostblink can carry you over a gap or low obstacle that you can't walk across. With **Plan Jumps In Pathfinding** on, A* treats those as extra moves: from a cell beside an obstacle it looks along 16 directions for the first walkable cell past it, provided nothing along the way blocks the **targeting** layer (a solid wall stops a jump; a chasm doesn't). The route takes the jump when the walkable detour is longer than the jump plus the skill's **Jump Path Cost**.
 
 How the two debug layers (Render > Show Terrain / Walkable Debug) are read:
 
@@ -451,8 +453,9 @@ So in a row where terrain reads `5 5 5` and walkable reads `5 0 5`, you can't wa
 Each movement skill has its own **Max Jump Distance** (world units, in the Movement Skills list). `0` means that skill is never used for jumps. Flame Dash, Frostblink, Leap Slam, Blink Arrow and Lightning Warp start at 400 / 500 / 660 / 500 / 450 — **Leap Slam's 660 was measured in game; the rest are estimates, not read from the game**. The real reach depends on your gems and gear, so set them to what you actually see. Too low just misses shortcuts; too high and the character falls short of the landing.
 
 How it behaves:
-- Jumps are only planned while a suitable skill is **off cooldown**. If everything is down, the route walks around; when one comes back the route is replanned.
-- The character walks to the takeoff cell (a tight tolerance, unlike normal waypoints), then uses the shortest-range ready skill that reaches the landing, aimed at it. If that skill is on cooldown at the takeoff it waits there.
+- Jumps are planned with the skills that are **set up** (enabled, Max Jump Distance above 0), whether or not they are on cooldown that instant - a 3 s cooldown is usually over by the time the takeoff is reached.
+- The character walks to the takeoff cell (a tight tolerance, unlike normal waypoints), then uses the shortest-range ready skill that reaches the landing, aimed at it.
+- **The route adjusts while moving.** If no jump skill is ready at the takeoff it waits up to the longest **Wait For Cooldown** among the jump skills; after that it drops the jump, bans that landing, switches jumps off for about 8 s so it doesn't plan the same gap again, and replans on foot. If the jump skills are disabled, swapped off the bar or shortened *while* the route is being walked, it replans straight away. When a skill reappears that wasn't there at planning time, it replans to take the shortcut.
 - If the landing isn't reached within ~2.5 s of the first attempt, that landing is banned for the route and the path is replanned around it.
 
 ### Straighter paths and hop-sized aiming
@@ -460,15 +463,15 @@ How it behaves:
 Movement skills work best along long straight lines, so two things shape the route for them:
 
 - **Path Straightness** (Movement settings) charges A* a cost for every change of direction, so among routes of similar length it picks the one with the fewest, longest straight runs. Measured on a real campaign zone: the raw route went from about **7 bends to 2**, and total turning along the smoothed route fell from about **75° to 53°**, with no change in route length and no measurable search cost. It levels off quickly on maps with long corridors, so the default of 4 is already on the plateau; raise it if you still see wiggles. It trades off against **Wall Clearance** — both are soft preferences.
-- **Travel Distance Per Use** (per skill, in the Movement Skills list) is how far one use of that skill carries you — e.g. Leap Slam 100. While walking a path the cursor is aimed *that far ahead* along the route instead of at the next waypoint, so each use covers a full hop. Only that hop has to be clear of obstacles, and the **Movement Skill Min/Max Distance** limits apply to the hop. Without it, a bend a few hundred units ahead vetoed a 100-unit leap, because the clearance check covered the whole distance to the waypoint. `0` = fall back to the skill's **Max Jump Distance**, and if that is `0` too the skill aims at the waypoint as before. Ground-dash skills (Leap Slam, Shield Charge, Whirling Blades) need **Prefer Movement Skills For Travel** on.
+- **Travel Distance Per Use** (per skill, in the Movement Skills list) is how far one use of that skill carries you — e.g. Leap Slam 100. While walking a path the cursor is aimed *that far ahead* along the route instead of at the next waypoint, so each use covers a full hop. Only that hop has to be clear of obstacles, and the skill's minimum distance applies to the hop. Without it, a bend a few hundred units ahead vetoed a 100-unit leap, because the clearance check covered the whole distance to the waypoint. `0` = fall back to the skill's **Max Jump Distance**, and if that is `0` too the skill aims at the waypoint as before. Ground-dash skills (Leap Slam, Shield Charge, Whirling Blades) need **Use For Travel** on.
 
 ### Per-skill hitbox clearance
 
-Some movement skills refuse to fire when the character is too close to an obstacle, as if their hitbox were bigger — you have to step around the corner before they work again. Each ground-dash skill in the Movement Skills list has a **Hitbox Clearance (cells)** setting that simulates this (1 cell ≈ 11 world units):
+Some movement skills refuse to fire when the character is too close to an obstacle, as if their hitbox were bigger — you have to step around the corner before they work again. Each ground-dash skill has a **Hitbox Clearance (cells)** setting that simulates this (1 cell ≈ 11 world units):
 
 - Before the skill is used, **every cell within that radius** of the character and of the whole hop must be walkable. That includes where you're standing *now*, so hugging a wall or a corner blocks the skill until you've moved clear. The plugin just keeps walking and tries again on the next input, which is the "move around the corner" you'd otherwise do by hand.
 - Set it per skill, to whatever that skill actually needs. When one skill is blocked, the next enabled ground-dash skill is tried with its own radius.
-- `0` = use the global **Movement Skill Clearance Margin** instead (the older, looser check: three lines along the hop, ignoring the first and last cell).
+- `0` = only the cells on the line itself have to be walkable. Cell values count 1…5 with distance from a wall, so a radius of 5 means "open floor only". Known skills start with a value (Shield Charge 4, Leap Slam 0.5).
 - It applies to skills that *collide* with obstacles (Leap Slam, Shield Charge, Whirling Blades), not to blinks.
 - Keep **Wall Clearance** at least as large as the biggest hitbox radius you set. If the route is allowed to hug walls closer than a skill's radius, that skill never gets enough room along it.
 
@@ -476,12 +479,12 @@ If a skill never fires, turn on **Show Detailed Debug**: the log names the first
 
 ### Why a movement skill never fires while pathfinding
 
-While following a path, the skill is judged against the **next waypoint** (or, if the skill has a Travel Distance Per Use, the hop toward it) — so a hop only qualifies if it is at least **Movement Skill Min Distance** long. Two settings decide how far out that waypoint is:
+While following a path, the skill is judged against the **next waypoint** (or, if the skill has a Travel Distance Per Use, the hop toward it) — so a hop only qualifies if it is at least that skill's **Minimum Distance Per Use** long. Two settings decide how far out that waypoint is:
 
 - **Max Waypoint Distance** is the ceiling. A* produces a route cell by cell; waypoints are placed at the furthest cell each one still has a clear walkable line to, so corners stay tight (the line breaks there) and straight stretches collapse into a single long hop. Raise this to get hops worth dashing.
 - **Keep Within Distance × 1.5** is the floor — waypoints closer than that count as already reached and are skipped. Waypoint spacing below that ceiling has no effect, so if you follow very tightly, lower Keep Within Distance too.
 
-Worth knowing for **ground dashes** specifically: they also need a clear corridor of **Movement Skill Clearance Margin** cells on each side along the hop (the whole way to the waypoint if the skill has no Travel Distance set), so a very long waypoint distance can make them fire *less* often in cluttered terrain. Blinks are unaffected by that, but they deliberately only fire where the walkable line is blocked — which a path waypoint never is, by construction — so on a path they only come into play through Dash Shortcut Path Ratio.
+Worth knowing for **ground dashes** specifically: they also need the skill's **Hitbox Clearance** to be clear along the hop (the whole way to the waypoint if the skill has no Travel Distance set), so a very long waypoint distance can make them fire *less* often in cluttered terrain. Blinks are unaffected by that, but they deliberately only fire where the walkable line is blocked — which a path waypoint never is, by construction — so on a path they only come into play through the skill's Shortcut Path Ratio.
 
 ---
 

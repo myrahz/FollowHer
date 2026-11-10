@@ -14,7 +14,7 @@ namespace FollowHer.Core.Combat.Skills
 
         private readonly Dictionary<string, SkillUsage> _skillUsage = new();
 
-        public void TrackUse(ActiveSkill skill)
+        public void TrackUse(SkillBase skill)
         {
             if (skill == null) return;
 
@@ -28,7 +28,7 @@ namespace FollowHer.Core.Combat.Skills
             usage.UseCount++;
         }
 
-        public bool CanUseSkill(ActiveSkill skill, int extraBuffer = 0)
+        public bool CanUseSkill(SkillBase skill, int extraBuffer = 0)
         {
             if (skill == null || !skill.CanUse)
                 return false;

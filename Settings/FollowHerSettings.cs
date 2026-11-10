@@ -108,24 +108,6 @@ public class MovementSettings
     [Menu("Disable Movement In Town", "Don't follow the leader while standing in a town or hideout")]
     public ToggleNode DisableMovementInTown { get; set; } = new(false);
 
-    [Menu("Dash Enabled", "Use an enabled blink-type movement skill (travels through obstacles, e.g. Frostblink/FlameDash/LightningWarp/BlinkArrow) to punch through a blocked path instead of walking")]
-    public ToggleNode DashEnabled { get; set; } = new(false);
-
-    [Menu("Prefer Movement Skills For Travel", "Use an enabled ground-dash movement skill (collides with obstacles, e.g. Shield Charge/Whirling Blades) instead of walking when the path is already clear - never used to punch through something blocked")]
-    public ToggleNode PreferMovementSkillsForTravel { get; set; } = new(false);
-
-    [Menu("Movement Skill Clearance Margin", "Grid cells of clearance required on each side of a ground-dash skill's travel line before it's used (accounts for character hitbox width)")]
-    public RangeNode<float> MovementSkillClearanceMargin { get; set; } = new(1.5f, 0.5f, 3f);
-
-    [Menu("Dash Shortcut Path Ratio", "When line of sight to the leader is blocked, blink straight to them (needs Dash Enabled + an off-cooldown blink skill) instead of pathfinding, if the walkable route is at least this many times longer than the straight-line distance. 1 = always prefer blinking when blocked; higher = only blink to skip a big detour. The straight-line hop still obeys Movement Skill Min/Max Distance.")]
-    public RangeNode<float> DashShortcutPathRatio { get; set; } = new(1.5f, 1f, 5f);
-
-    [Menu("Movement Skill Min Distance", "Don't use a movement skill (Dash Enabled/Prefer Movement Skills For Travel) for a hop shorter than this")]
-    public RangeNode<int> MovementSkillMinDistance { get; set; } = new(100, 0, 1000);
-
-    [Menu("Movement Skill Max Distance", "Don't use a movement skill (Dash Enabled/Prefer Movement Skills For Travel) for a hop longer than this")]
-    public RangeNode<int> MovementSkillMaxDistance { get; set; } = new(1000, 100, 3000);
-
     [Menu("Max Waypoint Distance", "How far apart path waypoints may be placed (world units) where the way ahead is clear. Corners and turns keep tight waypoints on their own - the line of sight breaks there - so raising this only stretches the straight sections, which is what gives a movement skill a hop long enough to be worth using. Note it can't produce a movement target closer than Keep Within Distance x 1.5, since waypoints inside that are treated as already reached.")]
     public RangeNode<int> MaxWaypointDistance { get; set; } = new(400, 50, 2000);
 
@@ -135,18 +117,32 @@ public class MovementSettings
     [Menu("Path Straightness", "How strongly the route prefers long straight runs over bends. Plain shortest paths wiggle - many routes of the same length differ only in how often they turn - and every bend shortens the stretch a movement skill can fly along. Higher = fewer, longer straight segments (and the route will detour a little to avoid a turn); lower = hugs the shortest path and bends freely. 0 = off. Works alongside Wall Clearance: both are soft preferences that the route trades off.")]
     public RangeNode<int> PathStraightness { get; set; } = new(4, 0, 10);
 
-    [Menu("Plan Jumps In Pathfinding", "Let the path use movement skills that jump over gaps and low obstacles (Leap Slam, Flame Dash, Frostblink) as a shortcut when walking around is much longer. Each skill's reach is its Max Jump Distance in the Movement Skills list; a skill with 0 there is never used for this.")]
+    [Menu("Plan Jumps In Pathfinding", "Let the path use movement skills that jump over gaps and low obstacles (Leap Slam, Flame Dash, Frostblink) as a shortcut when walking around is much longer. Each skill's reach is its Max Jump Distance and its cost is its Jump Path Cost, both in the Movement Skills list; a skill with 0 Max Jump Distance is never used for this.")]
     public ToggleNode EnableJumpPathing { get; set; } = new(true);
-
-    [Menu("Jump Cost (cells)", "How much walking a jump is worth to the path planner, in grid cells. A jump is only taken when the walkable detour is longer than the jump plus this. Raise it to make the character prefer walking; lower it to jump more eagerly.")]
-    public RangeNode<int> JumpPathCost { get; set; } = new(20, 0, 100);
 
     [Menu("Input Frequency (ms)", "Minimum delay between successive movement inputs")]
     public RangeNode<int> InputFrequency { get; set; } = new(50, 1, 100);
 
+    // The settings below used to be global and are now per movement skill. They are only read so a
+    // saved profile can seed each skill once (SkillHandler.ApplyMovementSettingsMigration); nothing
+    // writes or shows them. Plain fields, so the settings auto-renderer skips them; the JSON names are
+    // the old ones, so existing files load into them.
+    [JsonProperty("DashEnabled")] public LegacyNode<bool> LegacyDashEnabled;
+    [JsonProperty("PreferMovementSkillsForTravel")] public LegacyNode<bool> LegacyPreferMovementSkillsForTravel;
+    [JsonProperty("MovementSkillClearanceMargin")] public LegacyNode<float> LegacyClearanceMargin;
+    [JsonProperty("DashShortcutPathRatio")] public LegacyNode<float> LegacyDashShortcutPathRatio;
+    [JsonProperty("MovementSkillMinDistance")] public LegacyNode<int> LegacyMinDistance;
+    [JsonProperty("JumpPathCost")] public LegacyNode<int> LegacyJumpPathCost;
+
+    /// <summary>The <c>{"Value": x}</c> shape every settings node is saved as.</summary>
+    public class LegacyNode<T>
+    {
+        public T Value { get; set; }
+    }
+
     public ToggleNode EnablePathfindingFallback { get; set; } = new(true);
 
-    public ContentNode<ActiveSkill> MovementSkills { get; set; } = new ContentNode<ActiveSkill>()
+    public ContentNode<MovementSkill> MovementSkills { get; set; } = new ContentNode<MovementSkill>()
     {
         EnableItemCollapsing = true,
         EnableControls = false,
@@ -156,7 +152,7 @@ public class MovementSettings
     // set, a skill swapped out for a while). The list above only ever shows what's on the bar, and is
     // rebuilt from it, so without somewhere to keep these a skill's settings were lost the moment it
     // left the bar. A plain field so the settings auto-renderer skips it, like Combat.Profiles.
-    public Dictionary<string, ActiveSkill> MovementSkillArchive = new();
+    public Dictionary<string, MovementSkill> MovementSkillArchive = new();
 
     public FollowVisualSettings Visual { get; set; } = new();
     public FollowDebugSettings Debug { get; set; } = new();
@@ -316,7 +312,6 @@ public class TargetingSettings
     [Submenu(CollapsedByDefault = false)]
     public class PrioritySettings
     {
-        public ToggleNode EnablePriorities { get; set; } = new(true);
         public RangeNode<float> DistanceWeight { get; set; } = new(1.0f, 0f, 5f);
 
         public HealthSettings Health { get; set; } = new();
@@ -325,7 +320,6 @@ public class TargetingSettings
         [Submenu(CollapsedByDefault = false)]
         public class HealthSettings
         {
-            public ToggleNode ConsiderHealth { get; set; } = new(true);
             public ToggleNode PreferHigherHealth { get; set; } = new(false);
             public RangeNode<float> HealthWeight { get; set; } = new(1.0f, 0f, 5f);
         }
@@ -386,7 +380,6 @@ public class RenderSettings
 
     public TargetVisualsSettings TargetVisuals { get; set; } = new();
     public UISettings Interface { get; set; } = new();
-    public CursorSettings Cursor { get; set; } = new();
 
     [Submenu(CollapsedByDefault = false)]
     public class TargetVisualsSettings
@@ -404,26 +397,5 @@ public class RenderSettings
         public ToggleNode EnableWithFullscreenUI { get; set; } = new(false);
         public ToggleNode EnableWithLeftPanel { get; set; } = new(false);
         public ToggleNode EnableWithRightPanel { get; set; } = new(false);
-
-        public SafeZoneSettings SafeZone { get; set; } = new();
-
-        [Submenu(CollapsedByDefault = true)]
-        public class SafeZoneSettings
-        {
-            public RangeNode<float> LeftMargin { get; set; } = new(2f, 0f, 50f);
-            public RangeNode<float> RightMargin { get; set; } = new(3f, 0f, 50f);
-            public RangeNode<float> TopMargin { get; set; } = new(8f, 0f, 50f);
-            public RangeNode<float> BottomMargin { get; set; } = new(15f, 0f, 50f);
-        }
-    }
-
-    [Submenu(CollapsedByDefault = true)]
-    public class CursorSettings
-    {
-        public RangeNode<int> TargetingRadius { get; set; } = new(10, 1, 100);
-        public ToggleNode EnableRandomization { get; set; } = new(false);
-        public RangeNode<float> RandomizationFactor { get; set; } = new(0.5f, 0.1f, 1.0f);
-        public ToggleNode LimitCursorRange { get; set; } = new(false);
-        public RangeNode<int> MaxCursorRange { get; set; } = new(300, 50, 1000);
     }
 }

@@ -14,7 +14,7 @@ namespace FollowHer.Core.Combat.Skills
         private readonly GameController _gameController;
         private readonly KeyHandler _keyHandler;
         private readonly Dictionary<string, ActiveSkill> _skills = new();
-        private readonly Dictionary<string, ActiveSkill> _movementSkills = new();
+        private readonly Dictionary<string, MovementSkill> _movementSkills = new();
 
         public SkillHandler(GameController gameController)
         {
@@ -79,7 +79,7 @@ namespace FollowHer.Core.Combat.Skills
             ["lightningwarp"] = (450, 2, 0),
         };
 
-        private static void ApplyJumpDefaults(ActiveSkill activeSkill, ActorSkill skill)
+        private static void ApplyJumpDefaults(MovementSkill activeSkill, ActorSkill skill)
         {
             // Settings saved while this was a one-time flag were seeded with the version-1 entries.
             if (activeSkill.JumpDefaultsVersion < 1 && activeSkill.JumpDefaultsApplied)
@@ -104,11 +104,58 @@ namespace FollowHer.Core.Combat.Skills
             }
         }
 
+        // Per-skill values for settings that used to be global, for skills we know something about. A
+        // skill not listed here is seeded from the old global value instead (or a neutral default).
+        // Min distance: the shortest use that is still worth it (Shield Charge measured at about 260
+        // units; Leap Slam only beats walking above roughly 260-330). Hop: how far one use carries.
+        // Clearance: the radius (cells) around the character that must be clear before it fires.
+        private static readonly Dictionary<string, (int min, int hop, float clearance)> MovementSkillDefaults = new()
+        {
+            ["shieldcharge"] = (260, 800, 4f),
+            ["newshieldcharge"] = (260, 800, 4f),
+            ["leapslam"] = (326, 660, 0.5f),
+        };
+
+        /// <summary>One-time move of the settings that used to be global (Dash Enabled, Prefer Movement
+        /// Skills, Min Distance, Clearance Margin, Dash Shortcut Ratio, Jump Path Cost) onto each skill.
+        /// A value the skill already carries is never overwritten, so running this on an already-set-up
+        /// skill only fills the gaps.</summary>
+        private static void ApplyMovementSettingsMigration(MovementSkill movementSkill, ActorSkill skill)
+        {
+            if (movementSkill.MovementSettingsVersion >= 1) return;
+            movementSkill.MovementSettingsVersion = 1;
+
+            var name = NormalizeSkillName(skill.Name);
+            if (name == "move") return;
+
+            var legacy = FollowHer.Instance.Settings.Movement;
+            var known = MovementSkillDefaults.TryGetValue(name, out var entry) ||
+                        MovementSkillDefaults.TryGetValue(NormalizeSkillName(skill.InternalName), out entry);
+            var blink = movementSkill.TravelsThroughObstacles.Value;
+
+            // Roles: off unless the old global switch was on - a fresh install keeps doing nothing
+            // fancy until a skill is switched on.
+            movementSkill.UseToCrossBlockedPaths.Value = blink && (legacy.LegacyDashEnabled?.Value ?? false);
+            movementSkill.UseForTravel.Value = !blink && (legacy.LegacyPreferMovementSkillsForTravel?.Value ?? false);
+
+            if (movementSkill.MinDistance.Value == 0)
+                movementSkill.MinDistance.Value = known ? entry.min : legacy.LegacyMinDistance?.Value ?? 100;
+
+            if (movementSkill.HopDistance.Value == 0 && known)
+                movementSkill.HopDistance.Value = entry.hop;
+
+            if (movementSkill.ClearanceRadius.Value == 0f)
+                movementSkill.ClearanceRadius.Value = known ? entry.clearance : legacy.LegacyClearanceMargin?.Value ?? 0.5f;
+
+            movementSkill.ShortcutPathRatio.Value = legacy.LegacyDashShortcutPathRatio?.Value ?? 1.5f;
+            movementSkill.JumpPathCost.Value = legacy.LegacyJumpPathCost?.Value ?? 20;
+        }
+
         // The key a skill is pressed with has to follow the game's own binding. A skill that already
         // existed in the saved settings used to keep whatever key it was first discovered with, so one
         // bad reading was stored and then reused on every later start - even after the cause was fixed.
-        private static void ArchiveOffBar(Dictionary<string, ActiveSkill> archive,
-            Dictionary<string, ActiveSkill> known, Dictionary<string, ActiveSkill> onBar)
+        private static void ArchiveOffBar<T>(Dictionary<string, T> archive,
+            Dictionary<string, T> known, Dictionary<string, T> onBar) where T : SkillBase
         {
             archive.Clear();
             foreach (var (name, skill) in known)
@@ -117,7 +164,7 @@ namespace FollowHer.Core.Combat.Skills
             }
         }
 
-        private static void SyncKey(ActiveSkill activeSkill, System.Windows.Forms.Keys key)
+        private static void SyncKey(SkillBase activeSkill, System.Windows.Forms.Keys key)
         {
             if (activeSkill.Key.Value != key) activeSkill.Key.Value = key;
         }
@@ -191,7 +238,7 @@ namespace FollowHer.Core.Combat.Skills
                     existingSkills[skill.Name] = skill;
                 }
 
-                var existingMovementSkills = new Dictionary<string, ActiveSkill>();
+                var existingMovementSkills = new Dictionary<string, MovementSkill>();
                 foreach (var skill in FollowHer.Instance.Settings.Movement.MovementSkillArchive.Values)
                 {
                     existingMovementSkills[skill.Name] = skill;
@@ -225,7 +272,6 @@ namespace FollowHer.Core.Combat.Skills
                         if (!Enum.TryParse(shortcut.MainKey.ToString(), out System.Windows.Forms.Keys key))
                             continue;
 
-                        ActiveSkill activeSkill;
                         if (IsMovementSkill(skill))
                         {
                             if(existingMovementSkills.TryGetValue(skill.Name, out var existingMovementSkill))
@@ -234,11 +280,12 @@ namespace FollowHer.Core.Combat.Skills
                                 activeSkill.Skill = skill;
                                 activeSkill.Id = skill.Id;
                                 activeSkill.InternalId = skill.Id2;
+                            MovementSkill activeSkill;
                                 SyncKey(activeSkill, key);
                             }
                             else
                             {
-                                activeSkill = new ActiveSkill
+                                activeSkill = new MovementSkill
                                 {
                                     Skill = skill,
                                     Key = new HotkeyNode(key),
@@ -248,22 +295,12 @@ namespace FollowHer.Core.Combat.Skills
                                     Enabled = new ToggleNode(true),
                                     UseClick = new ToggleNode(false),
                                     ExtraDelay = new RangeNode<int>(0, 0, 5000),
-                                    LineOfSightType = new ListNode(),
                                     TravelsThroughObstacles = new ToggleNode(IsBlinkTypeMovementSkill(skill))
                                 };
                             }
 
                             ApplyJumpDefaults(activeSkill, skill);
-
-                            activeSkill.LineOfSightType.SetListValues(
-                            [
-                                "Walkable"
-                            ]);
-
-                            if (activeSkill.LineOfSightType.Value == null || activeSkill.LineOfSightType.Value == "")
-                            {
-                                activeSkill.LineOfSightType.Value = activeSkill.LineOfSightType.Values[0];
-                            }
+                            ApplyMovementSettingsMigration(activeSkill, skill);
 
                             _movementSkills[skill.Name] = activeSkill;
                         }
@@ -275,6 +312,7 @@ namespace FollowHer.Core.Combat.Skills
                                 activeSkill.Skill = skill;
                                 activeSkill.Id = skill.Id;
                                 activeSkill.InternalId = skill.Id2;
+                            ActiveSkill activeSkill;
                                 SyncKey(activeSkill, key);
                             }
                             else
