@@ -194,6 +194,14 @@ public class NavigationManager
             _followManager.LogDebug($"STUCK for {seconds:F1}s at grid ({player.GridPosNum.X:F0},{player.GridPosNum.Y:F0}), " +
                                     $"step {step.Kind} toward grid ({step.Grid.X:F0},{step.Grid.Y:F0}); " +
                                     $"{_followManager.DescribeSurroundings()}; stuck skill keys released: {released}");
+
+            // Pinned beside a closed door is a door in the way, whether or not the route passes through
+            // it: open the nearest one in reach rather than walking at it.
+            if (_followManager.TryOpenDoorOnRoute(null, null, anyDoorWithin: 250f))
+            {
+                _stuck.Reset();
+                return true;
+            }
         }
 
         if (_stuck.Reached(seconds, StuckWalkOnlySeconds, 2))
@@ -266,6 +274,16 @@ public class NavigationManager
         }
 
         var step = _pathFollower.GetNextStep(targetGrid, settings.Movement.KeepWithinDistance.Value * 1.5f);
+
+        // A closed door on the route is clicked open before walking on; standing to click it is not
+        // being stuck.
+        if (step.Kind is PathStepKind.Moving or PathStepKind.Arrived &&
+            _followManager.TryOpenDoorOnRoute(_pathFollower.UpcomingWaypoints(8), _pathFollower.FirstBlockedCellOnRoute(8)))
+        {
+            _stuck.Reset();
+            Status = $"{target.Label} - {distance:F0} away, opening a door";
+            return true;
+        }
 
         // Only ticks that are meant to be moving count towards "stuck": waiting at a jump takeoff or
         // for terrain data is standing still on purpose.

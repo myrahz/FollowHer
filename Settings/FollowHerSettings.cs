@@ -120,6 +120,12 @@ public class MovementSettings
     [Menu("Plan Jumps In Pathfinding", "Let the path use movement skills that jump over gaps and low obstacles (Leap Slam, Flame Dash, Frostblink) as a shortcut when walking around is much longer. Each skill's reach is its Max Jump Distance and its cost is its Jump Path Cost, both in the Movement Skills list; a skill with 0 Max Jump Distance is never used for this.")]
     public ToggleNode EnableJumpPathing { get; set; } = new(true);
 
+    [Menu("Open Doors On The Route", "Plan routes through closed doors the way Radar does (a closed door is treated as passable) and click one open only when the route actually runs through it. Stays off levers, labyrinth doors and NPC doors. Off = closed doors are walls, as in the raw terrain data.")]
+    public ToggleNode OpenDoors { get; set; } = new(true);
+
+    [Menu("Door Open Distance", "How close to a door that blocks the route to be before clicking it, in world units.")]
+    public RangeNode<int> DoorOpenDistance { get; set; } = new(150, 50, 300);
+
     [Menu("Input Frequency (ms)", "Minimum delay between successive movement inputs")]
     public RangeNode<int> InputFrequency { get; set; } = new(50, 1, 100);
 

@@ -428,6 +428,7 @@ public class FollowManager
         switch (step.Kind)
         {
             case PathStepKind.Moving:
+                if (TryOpenDoorOnRoute(_pathFollower.UpcomingWaypoints(8), _pathFollower.FirstBlockedCellOnRoute(8))) return true;
                 return ExecuteMovement(step.World, step.Grid);
 
             case PathStepKind.Jump:
@@ -901,6 +902,118 @@ public class FollowManager
 
         ExileCore.Input.SetCursorPos(screenPos);
         ExileCore.Input.Click(MouseButtons.Left);
+    }
+
+    // Doors: how many times each has been clicked this area, so one that won't open (locked, or not
+    // really a door) is given up on instead of clicked forever.
+    private readonly Dictionary<uint, int> _doorClicks = new();
+    private DateTime _nextDoorScanAt = DateTime.MinValue;
+    private const int MaxDoorClicks = 8;
+    private const int DoorScanIntervalMs = 150;
+    private const float DoorBlockedSpotRadiusWorld = 220f;
+    private const float DoorRouteSlackWorld = 110f;
+
+    /// <summary>If a closed door stands on the route ahead, walk up to it and click it open. Returns true
+    /// when it used the tick (stopped and clicked). A door is "on the route" when it lies within
+    /// <see cref="DoorRouteSlackWorld"/> of the line from the character through the next waypoints
+    /// (<paramref name="upcoming"/>), or within <see cref="DoorBlockedSpotRadiusWorld"/> of a spot where
+    /// the route crosses terrain that is blocked on the raw grid (<paramref name="blockedAt"/>). Many
+    /// doors are not in the terrain data at all - the character just walks into them - so the line is the
+    /// main test, not the grid. With <paramref name="anyDoorWithin"/> above 0 the route is ignored and
+    /// the nearest closed door that close is opened: the stuck recovery uses that when the character is
+    /// pinned beside a door.
+    /// Doors are found by their TriggerableBlockage component, the way AutoOpen finds them; labyrinth
+    /// doors, NPC doors and door keys are left alone, and each door is clicked at most
+    /// <see cref="MaxDoorClicks"/> times per area.</summary>
+    internal bool TryOpenDoorOnRoute(IReadOnlyList<Vector3> upcoming, Vector3? blockedAt = null, float anyDoorWithin = 0f)
+    {
+        var settings = FollowHer.Instance.Settings.Movement;
+        if (!settings.OpenDoors || DateTime.Now < _nextDoorScanAt) return false;
+        _nextDoorScanAt = DateTime.Now.AddMilliseconds(DoorScanIntervalMs);
+
+        var player = _gameController.Player;
+        if (player == null || IsInTownOrHideout()) return false;
+
+        Entity best = null;
+        var bestDistance = float.MaxValue;
+
+        foreach (var entity in _gameController.EntityListWrapper.OnlyValidEntities)
+        {
+            if (!entity.IsValid || !entity.IsTargetable) continue;
+            if (!entity.TryGetComponent<TriggerableBlockage>(out var blockage) || !blockage.IsClosed) continue;
+
+            var path = entity.Path ?? "";
+            if (!path.Contains("door", StringComparison.OrdinalIgnoreCase) ||
+                path.Contains("door_npc", StringComparison.OrdinalIgnoreCase) ||
+                path.Contains("Labyrinth", StringComparison.OrdinalIgnoreCase) ||
+                path.Contains("DoorKey", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (_doorClicks.GetValueOrDefault(entity.Id) >= MaxDoorClicks) continue;
+
+            var distance = Vector3.Distance(player.PosNum, entity.PosNum);
+            var qualifies = anyDoorWithin > 0f
+                ? distance <= anyDoorWithin
+                : DoorIsOnRoute(player.PosNum, entity.PosNum, upcoming) || DoorIsAtBlockedSpot(entity.PosNum, blockedAt);
+            if (!qualifies || distance >= bestDistance) continue;
+
+            best = entity;
+            bestDistance = distance;
+        }
+
+        if (best == null) return false;
+
+        // Walk up to it first; the click is only made once it is in reach.
+        if (bestDistance > settings.DoorOpenDistance.Value && anyDoorWithin <= 0f) return false;
+
+        var clicks = _doorClicks.GetValueOrDefault(best.Id) + 1;
+        _doorClicks[best.Id] = clicks;
+
+        // The door has to be clicked standing still: the click lands where the door is on screen now.
+        StopMovement();
+        using (ExileCore.Input.InputManager.BlockUserMouseInput())
+        {
+            ClickWorldPosition(best.PosNum);
+        }
+
+        _nextDoorScanAt = DateTime.Now.AddMilliseconds(600);
+        LogDebug($"Opening door '{best.Path}' {bestDistance:F0}u away (click {clicks}/{MaxDoorClicks})");
+        return true;
+    }
+
+    // On the route if it lies within slack of the line the character will walk: from here through the
+    // next few waypoints. With no route to go by, only a door right beside the character counts.
+    private static bool DoorIsOnRoute(Vector3 player, Vector3 door, IReadOnlyList<Vector3> upcoming)
+    {
+        if (upcoming == null || upcoming.Count == 0) return Vector3.Distance(player, door) <= 120f;
+
+        var from = player;
+        foreach (var to in upcoming)
+        {
+            if (DistanceToSegment2D(door, from, to) <= DoorRouteSlackWorld) return true;
+            from = to;
+        }
+
+        return false;
+    }
+
+    private static bool DoorIsAtBlockedSpot(Vector3 door, Vector3? blockedAt) =>
+        blockedAt is { } spot &&
+        Vector2.Distance(new Vector2(door.X, door.Y), new Vector2(spot.X, spot.Y)) <= DoorBlockedSpotRadiusWorld;
+
+    private static float DistanceToSegment2D(Vector3 point, Vector3 a, Vector3 b)
+    {
+        var p = new Vector2(point.X, point.Y);
+        var s = new Vector2(a.X, a.Y);
+        var e = new Vector2(b.X, b.Y);
+        var segment = e - s;
+        var lengthSquared = segment.LengthSquared();
+        if (lengthSquared < 0.0001f) return Vector2.Distance(p, s);
+
+        var t = Math.Clamp(Vector2.Dot(p - s, segment) / lengthSquared, 0f, 1f);
+        return Vector2.Distance(p, s + segment * t);
     }
 
     private DateTime _movementSkillsSuppressedUntil = DateTime.MinValue;
@@ -1493,6 +1606,7 @@ public class FollowManager
         // Radar's targets are per-area, so a destination picked in the zone we just left means
         // nothing here (its grid coordinates would point at an unrelated spot).
         Navigation.ResetForArea();
+        _doorClicks.Clear();
         ClearState();
     }
 

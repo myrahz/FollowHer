@@ -270,6 +270,8 @@ See [Runtime controls](#runtime-controls-hotkeys--overlay). Precision Key / Prec
 | **Path Straightness** | 4 | How strongly the route prefers long straight runs over bends (`0` = off, `10` = strongest). Routes of equal length often differ only in how many times they turn; this charges a cost per bend, so the route holds a heading and bends less, at the price of the odd small detour. See [Straighter paths and hop-sized aiming](#straighter-paths-and-hop-sized-aiming). |
 | **Wall Clearance** | 3 | Grid cells (~11 world units each) the path tries to keep off walls. Shortest-path routes hug walls, which leaves ground dashes no clear corridor; this makes A* pay extra for cells near walls and stops waypoint smoothing from cutting corners. Soft preference - a narrower gap is still used if it's the only way. `0` = plain shortest path. |
 | **Plan Jumps In Pathfinding** | on | Let the path jump over gaps and low obstacles with movement skills (Leap Slam, Flame Dash, Frostblink) when that beats the walk. See [Jumping obstacles](#jumping-obstacles). |
+| **Open Doors On The Route** | on | Click closed doors open when they stand on the route ahead (and plan routes on the door-cleared grid Radar uses). Leaves labyrinth doors, NPC doors and door keys alone. Off = a closed door is a wall. |
+| **Door Open Distance** | 150 | How close to a door that blocks the route to be before clicking it (world units). |
 | **Input Frequency (ms)** | 50 | Minimum delay between successive movement inputs. |
 | **Enable Pathfinding Fallback** | on | Use A* pathfinding around obstacles. Off = always walk straight at the target. |
 | **Movement Skills** | — | Auto-discovered movement skills. Everything that depends on the skill - roles, distances, hitbox, jump reach and cost - is set per skill; see [Movement skills](#movement-skills). |
@@ -478,6 +480,16 @@ Some movement skills refuse to fire when the character is too close to an obstac
 - Keep **Wall Clearance** at least as large as the biggest hitbox radius you set. If the route is allowed to hug walls closer than a skill's radius, that skill never gets enough room along it.
 
 If a skill never fires, turn on **Show Detailed Debug**: the log names the first blocked cell, whether it's at the start of the hop or along it, and the radius that was used.
+
+### Doors
+
+A closed door is often **not in the terrain data at all** - the grid shows open floor where the door stands, and the character simply walks into its collision. So doors are found from the game's entities (the way AutoOpen does: a `TriggerableBlockage` component that is closed, "door" in the path), not from the grid.
+
+With **Open Doors On The Route** on, a closed door counts as being in the way when it lies within about 110 units of the line the character is about to walk - from where it stands through the next 8 waypoints - or within about 220 units of a spot where the route crosses terrain that *is* blocked on the raw grid (routes are also planned on the door-cleared grid Radar uses, so such a door is passable to the planner). The character walks up to it, and once within **Door Open Distance** stops and clicks it, up to 8 clicks per door per area so a locked door is abandoned rather than clicked forever. A door that merely stands near the route is left alone, as are labyrinth doors, NPC doors and door keys.
+
+If the character is pinned in place (see Stuck recovery) with a closed door within 250 units, that door is opened whether or not the route passes through it. Movement skills still see the door as solid, since line of sight and clearance read the raw grid.
+
+Limit: only doors the game has loaded are known, so one far across the zone is not seen until you are near it, and a route already planned is not redone when a door comes into range.
 
 ### Stuck recovery (Navigator)
 

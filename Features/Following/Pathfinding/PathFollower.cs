@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Numerics;
 using ExileCore;
 using ExileCore.Shared.Helpers;
@@ -222,6 +223,93 @@ public class PathFollower
 
     private float CurrentJumpRange() => CurrentJump().Range;
 
+    private int[][] _doorGrid;
+    private int[][] _doorGridSource;
+    private DateTime _doorGridBuiltAt = DateTime.MinValue;
+    private const int DoorGridMaxAgeMs = 20000;
+
+    /// <summary>The walkable grid routes are planned on. With Open Doors on it is the game's pathfinding
+    /// data with closed doors cleared - the same view Radar plans on - so a closed door is a way through
+    /// (to be clicked open on arrival) rather than a wall. Rebuilt at most every 20 s and per area; line
+    /// of sight and skill clearance keep reading the raw grid, so a movement skill still sees the door.</summary>
+    private int[][] PlanningGrid()
+    {
+        var raw = _lineOfSight.GetGridReference(LineOfSightDataType.Walkable);
+        if (raw == null || !FollowHer.Instance.Settings.Movement.OpenDoors) return raw;
+
+        if (_doorGrid != null && ReferenceEquals(_doorGridSource, raw) &&
+            (DateTime.Now - _doorGridBuiltAt).TotalMilliseconds < DoorGridMaxAgeMs)
+        {
+            return _doorGrid;
+        }
+
+        try
+        {
+            var cleared = _gameController.IngameState.Data.GetClearedPathfindingData();
+            if (cleared != null && cleared.Length == raw.Length)
+            {
+                _doorGrid = cleared;
+                _doorGridSource = raw;
+                _doorGridBuiltAt = DateTime.Now;
+                return cleared;
+            }
+        }
+        catch
+        {
+            // Fall back to the raw grid: doors are walls, as before.
+        }
+
+        return raw;
+    }
+
+    /// <summary>The next few waypoints of the current route, in world coordinates - what lies along
+    /// the line the character is about to walk.</summary>
+    public List<Vector3> UpcomingWaypoints(int count)
+    {
+        var result = new List<Vector3>();
+        if (_currentPath == null) return result;
+
+        for (var i = _currentPathIndex; i < _currentPath.Count && result.Count < count; i++)
+        {
+            result.Add(GridToWorld(_currentPath[i].x, _currentPath[i].y));
+        }
+
+        return result;
+    }
+
+    /// <summary>Where the route ahead first crosses a cell that is blocked on the raw terrain grid,
+    /// looking at the next <paramref name="maxNodes"/> waypoints - or null if it doesn't. Routes are
+    /// planned on the door-cleared grid, so a cell that is passable there but blocked here is a closed
+    /// door standing in the way; that is the only time a door needs opening. Jump edges are skipped:
+    /// they cross unwalkable ground on purpose.</summary>
+    public Vector3? FirstBlockedCellOnRoute(int maxNodes)
+    {
+        var raw = _lineOfSight.GetGridReference(LineOfSightDataType.Walkable);
+        if (raw == null || _currentPath == null) return null;
+
+        var from = StandingCell();
+        var last = Math.Min(_currentPath.Count, _currentPathIndex + maxNodes);
+        for (var i = _currentPathIndex; i < last; i++)
+        {
+            var to = _currentPath[i];
+            if (!_jumpLandings.Contains(to))
+            {
+                var steps = Math.Max(Math.Abs(to.x - from.x), Math.Abs(to.y - from.y));
+                for (var s = 0; s <= steps; s++)
+                {
+                    var t = steps == 0 ? 0f : s / (float)steps;
+                    var x = (int)Math.Round(from.x + (to.x - from.x) * t);
+                    var y = (int)Math.Round(from.y + (to.y - from.y) * t);
+                    if (!GridPathfinder.IsCellWalkable(raw, x, y)) return GridToWorld(x, y);
+                }
+            }
+
+            from = to;
+        }
+
+        return null;
+    }
+
     public int WaypointCount => _currentPath?.Count ?? 0;
     public int RemainingWaypoints => _currentPath == null ? 0 : Math.Max(0, _currentPath.Count - _currentPathIndex);
 
@@ -262,7 +350,7 @@ public class PathFollower
     /// doesn't touch the cached path.</summary>
     public bool HasWalkablePath((int x, int y) start, (int x, int y) target)
     {
-        var grid = _lineOfSight.GetGridReference(LineOfSightDataType.Walkable);
+        var grid = PlanningGrid();
         if (grid == null) return false;
 
         var path = GridPathfinder.AStar(grid, start, target, MaxPathSearchNodes);
@@ -301,7 +389,7 @@ public class PathFollower
                 // The grid is only fetched when A* is about to run: LineOfSight.GetGrid copies the
                 // whole area grid, so doing it on every tick (as the pre-extraction code did) was
                 // pure waste.
-                var grid = _lineOfSight.GetGridReference(LineOfSightDataType.Walkable);
+                var grid = PlanningGrid();
                 if (grid == null)
                 {
                     // Terrain for this area hasn't been read yet - there is nothing to path on. The
@@ -489,7 +577,7 @@ public class PathFollower
     /// default) has openable doors and blockades already cleared.</summary>
     public (int x, int y)? SnapToWalkable((int x, int y) cell, int maxRadius = 12)
     {
-        var grid = _lineOfSight.GetGridReference(LineOfSightDataType.Walkable);
+        var grid = PlanningGrid();
         if (grid == null) return cell;
 
         if (GridPathfinder.IsCellWalkable(grid, cell.x, cell.y)) return cell;
@@ -599,6 +687,24 @@ public class PathFollower
         return DateTime.Now >= _nextPathRecomputeAt;
     }
 
+    /// <summary>Whether every cell along the straight line between two cells reads at least
+    /// <paramref name="floor"/> on the walkable layer (5 = open floor, 1-4 = margin cells beside walls).
+    /// The two end cells are exempt: a waypoint that has to sit on a margin cell may, and only the stretch
+    /// between waypoints is being judged.</summary>
+    private static bool KeepsToFloor(int[][] grid, Vector2 from, Vector2 to, int floor)
+    {
+        var steps = Math.Max(1, (int)Math.Ceiling(Vector2.Distance(from, to) * 2f));
+        for (var s = 1; s < steps; s++)
+        {
+            var point = from + (to - from) * (s / (float)steps);
+            var x = (int)Math.Round(point.X);
+            var y = (int)Math.Round(point.Y);
+            if (y < 0 || y >= grid.Length || x < 0 || x >= grid[y].Length || grid[y][x] < floor) return false;
+        }
+
+        return true;
+    }
+
     /// <summary>Turns A*'s cell-by-cell route into waypoints, by keeping only the furthest cell each
     /// waypoint still has a clear walkable line to. The spacing that falls out of this is the point:
     /// a straight stretch collapses to one long hop (which is what makes a hop long enough for a
@@ -615,6 +721,18 @@ public class PathFollower
         var clearance = FollowHer.Instance.Settings.Movement.WallClearance.Value;
         var corridorMargin = clearance > 1 ? clearance - 1 : 0;
         var walkableGrid = corridorMargin > 0 ? _lineOfSight.GetGridReference(LineOfSightDataType.Walkable) : null;
+
+        // A shortcut that grazes the margin cells beside a wall is a straight line along which a ground
+        // dash that needs open floor can never fire, however clear the route's own cells were. So when
+        // a travel skill requires a floor value, a shortcut must keep to it too; where the route itself
+        // has to squeeze past, the waypoints stay close and the shortcuts shorten.
+        var floor = FollowHer.Instance.Settings.Movement.MovementSkills.Content
+            .Where(skill => skill.Enabled && skill.Name != "Move" && !skill.TravelsThroughObstacles &&
+                            skill.UseForTravel && skill.UsableWithCurrentWeapon)
+            .Select(skill => skill.RequiredFloorValue.Value)
+            .DefaultIfEmpty(0)
+            .Max();
+        var floorGrid = floor > 1 ? _lineOfSight.GetGridReference(LineOfSightDataType.Walkable) : null;
 
         var smoothed = new List<(int x, int y)>();
         var i = 0;
@@ -657,7 +775,8 @@ public class PathFollower
                     var from = new Vector2(rawPath[i].x, rawPath[i].y);
                     var to = new Vector2(rawPath[j].x, rawPath[j].y);
                     if (_lineOfSight.HasLineOfSight(from, to, LineOfSightDataType.Walkable) &&
-                        (walkableGrid == null || GridPathfinder.HasCorridorClearance(walkableGrid, from, to, corridorMargin)))
+                        (walkableGrid == null || GridPathfinder.HasCorridorClearance(walkableGrid, from, to, corridorMargin)) &&
+                        (floorGrid == null || KeepsToFloor(floorGrid, from, to, floor)))
                     {
                         best = j;
                         break;
