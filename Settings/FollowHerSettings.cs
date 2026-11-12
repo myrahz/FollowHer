@@ -241,6 +241,12 @@ public class CombatSettings
     public ToggleNode AttackWhenLeaderIsAttacking { get; set; } = new(true);
     public RangeNode<int> DistanceToLeaderToAttack { get; set; } = new(40, 20, 200);
 
+    [Menu("Attack When Leader Is Idle Near Monsters", "Also attack when the leader is standing still with hostile monsters close to them, even if they aren't attacking. Works alongside 'Attack When Leader Is Attacking' (either one opens the gate) and uses the same 'Distance To Leader To Attack' range.")]
+    public ToggleNode AttackWhenLeaderIdleNearMonsters { get; set; } = new(false);
+
+    [Menu("Idle Monster Radius", "How close (world units) a hostile monster must be to the idle leader to count.")]
+    public RangeNode<int> IdleMonsterRadius { get; set; } = new(80, 20, 300);
+
     [Menu("Attack Grace Period (ms)", "Keep attacking for this long after the leader was last seen attacking, instead of requiring them to be attacking at that exact instant - smooths over the gaps between individual swings")]
     public RangeNode<int> AttackGracePeriod { get; set; } = new(500, 0, 3000);
 

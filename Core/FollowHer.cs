@@ -166,10 +166,20 @@ namespace FollowHer
             }
         }
 
+        // True if a living hostile monster is within radius (world units) of the entity.
+        private bool HasHostileMonstersNear(Entity center, float radius)
+        {
+            var monsters = GameController.EntityListWrapper?.ValidEntitiesByType?.GetValueOrDefault(EntityType.Monster);
+            return monsters != null && monsters.Any(m =>
+                m != null && m.IsValid && m.IsAlive && m.IsHostile && m.IsTargetable && m.Distance(center) <= radius);
+        }
+
         public override void AreaChange(AreaInstance area)
         {
             _isToggled = false;
-            _fightingToggled = false;
+            // The Fighting Toggle Key is a standing preference in Follow mode - zoning with the leader
+            // shouldn't make you press it again. Navigator mode never uses it (fighting is the held
+            // Precision key there), and switching mode still clears it.
             // Radar's target list is per-area - drop the old one so the navigator rescans here.
             _targetNavigatorWindow.Invalidate();
             // Movement's toggle state is intentionally left alone - following the leader through
@@ -258,7 +268,7 @@ namespace FollowHer
                     // there's no leader-based restriction and the gate is always open (the routine's
                     // own targeting range still applies downstream).
                     var attackGateOpen = true;
-                    if (Settings.Combat.AttackWhenLeaderIsAttacking)
+                    if (Settings.Combat.AttackWhenLeaderIsAttacking || Settings.Combat.AttackWhenLeaderIdleNearMonsters)
                     {
                         attackGateOpen = false;
                         var leaderEntity = LeaderLocator.FindLeaderEntity(GameController, Settings.LeaderName.Value);
@@ -266,21 +276,37 @@ namespace FollowHer
                         var actorComponent = leaderEntity?.GetComponent<Actor>();
                         if (actorComponent != null && leaderEntity.DistancePlayer < Settings.Combat.DistanceToLeaderToAttack)
                         {
-                            // Every skill the leader uses counts as attacking unless it's blacklisted -
-                            // see LeaderAttackDetector for why this is inverted from the old animation list.
-                            var leaderIsAttackingNow = LeaderAttackDetector.IsAttacking(
-                                actorComponent, Settings.Combat.LeaderSkillBlacklistEntries);
-
-                            if (leaderIsAttackingNow)
+                            // Second way to open the gate: the leader is standing still with hostile
+                            // monsters close to them (e.g. a boss they're not hitting, or a caster whose
+                            // skill doesn't register as attacking).
+                            if (Settings.Combat.AttackWhenLeaderIdleNearMonsters &&
+                                !actorComponent.isMoving &&
+                                HasHostileMonstersNear(leaderEntity, Settings.Combat.IdleMonsterRadius.Value))
                             {
-                                _lastLeaderAttackDetectedAt = DateTime.Now;
+                                attackGateOpen = true;
                             }
 
-                            // Keep attacking for a short grace period after the leader was last seen
-                            // attacking, rather than requiring isAttacking to read true on this exact
-                            // tick - smooths over the windup/recovery gaps between individual swings.
-                            var gracePeriodMs = Settings.Combat.AttackGracePeriod.Value;
-                            attackGateOpen = DateTime.Now - _lastLeaderAttackDetectedAt <= TimeSpan.FromMilliseconds(gracePeriodMs);
+                            if (Settings.Combat.AttackWhenLeaderIsAttacking)
+                            {
+                                // Every skill the leader uses counts as attacking unless it's blacklisted -
+                                // see LeaderAttackDetector for why this is inverted from the old animation list.
+                                var leaderIsAttackingNow = LeaderAttackDetector.IsAttacking(
+                                    actorComponent, Settings.Combat.LeaderSkillBlacklistEntries);
+
+                                if (leaderIsAttackingNow)
+                                {
+                                    _lastLeaderAttackDetectedAt = DateTime.Now;
+                                }
+
+                                // Keep attacking for a short grace period after the leader was last seen
+                                // attacking, rather than requiring isAttacking to read true on this exact
+                                // tick - smooths over the windup/recovery gaps between individual swings.
+                                var gracePeriodMs = Settings.Combat.AttackGracePeriod.Value;
+                                if (DateTime.Now - _lastLeaderAttackDetectedAt <= TimeSpan.FromMilliseconds(gracePeriodMs))
+                                {
+                                    attackGateOpen = true;
+                                }
+                            }
                         }
                     }
 
