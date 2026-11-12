@@ -44,6 +44,16 @@ public class CombatRuleEditor
             return;
         }
 
+        var meleeRange = profile.MeleeRange;
+        if (ImGui.InputInt("Melee Range", ref meleeRange))
+        {
+            profile.MeleeRange = Math.Max(0, meleeRange);
+        }
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip("Melee builds: while attacking and no rule fires, walk up to the nearest monster until it is within this many world units, and stand there. 0 = off.");
+        }
+
         DrawRuleList(settings, profile);
     }
 

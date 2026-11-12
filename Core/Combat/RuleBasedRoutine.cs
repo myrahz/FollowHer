@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Numerics;
 using ExileCore;
 using ExileCore.PoEMemory.MemoryObjects;
@@ -141,6 +142,42 @@ public class RuleBasedRoutine : OrbWalkingRoutineBase
         {
             LogError($"Error in GetBestAction: {ex.Message}");
             return (null, null);
+        }
+    }
+
+    // Melee positioning (profile MeleeRange > 0): walk straight at the nearest valid monster until it
+    // is in range, then stand still so we neither wander off nor run back to the leader mid-fight.
+    // The target selector was refreshed by GetBestAction earlier this tick.
+    protected override bool TryApproachTarget()
+    {
+        try
+        {
+            var profile = GetActiveProfile();
+            if (profile == null || profile.MeleeRange <= 0) return false;
+
+            var anySkill = SkillHandler.GetAllSkills().FirstOrDefault();
+            if (anySkill == null) return false;
+
+            var nearest = _targetSelector.GetValidTargets(anySkill)
+                .Where(e => e.IsHostile)
+                .OrderBy(e => e.DistancePlayer)
+                .FirstOrDefault();
+            if (nearest == null) return false;
+
+            if (nearest.DistancePlayer > profile.MeleeRange)
+            {
+                // No grid position passed on purpose: that would let a movement skill (Leap Slam,
+                // Shield Charge) be picked and overshoot the monster.
+                return FollowManager.ExecuteMovement(nearest.PosNum);
+            }
+
+            FollowManager.StopMovement();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogError($"Error in TryApproachTarget: {ex.Message}");
+            return false;
         }
     }
 

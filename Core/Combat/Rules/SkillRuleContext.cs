@@ -37,6 +37,34 @@ public class SkillRuleContext
                         m.Distance(_targetEntity) <= radius) ?? 0;
     }
 
+    // Pack counts: hostile, living monsters within radius (world units) of the target, the target
+    // itself included - so "PackCount(60, MonsterRarity.Rare) >= 1" is true when the target is a rare.
+    private IEnumerable<Entity> PackMembers(float radius)
+    {
+        if (_targetEntity == null) return Enumerable.Empty<Entity>();
+
+        return _gameController?.EntityListWrapper?.ValidEntitiesByType?.GetValueOrDefault(EntityType.Monster)?
+                   .Where(m => m != null && m.IsValid && m.IsAlive && m.IsHostile && m.Distance(_targetEntity) <= radius)
+               ?? Enumerable.Empty<Entity>();
+    }
+
+    public int PackCount(float radius, MonsterRarity rarity) => PackMembers(radius).Count(m => m.Rarity == rarity);
+
+    public int PackCountAny(float radius) => PackMembers(radius).Count();
+
+    /// <summary>Monsters of every rarity except the given one - e.g. "anything that isn't a unique".</summary>
+    public int PackCountNot(float radius, MonsterRarity rarity) => PackMembers(radius).Count(m => m.Rarity != rarity);
+
+    /// <summary>The "worth a cooldown" test shared by the totem/trap rules: 2+ magic, 1+ rare,
+    /// 1+ unique, or 7+ monsters of any rarity around the target.</summary>
+    public bool PackWorthy(float radius)
+    {
+        var pack = PackMembers(radius).ToList();
+        return pack.Count >= 7 ||
+               pack.Count(m => m.Rarity == MonsterRarity.Magic) >= 2 ||
+               pack.Any(m => m.Rarity == MonsterRarity.Rare || m.Rarity == MonsterRarity.Unique);
+    }
+
     // Generalizes the old RF routine's hardcoded "is there already a totem near this target"
     // check (it matched a literal metadata path substring within a fixed radius).
     public bool HasNearbyEntityWithMetadata(string pathSubstring, float radius)

@@ -138,6 +138,15 @@ namespace FollowHer
                     Settings.Combat.SeededStaticStrikeHelix = true;
                 }
 
+                // Slams is new; RF was rewritten (and gained Melee Range), so the saved one is replaced
+                // once. After this, edits to either are kept like any other profile.
+                if (!Settings.Combat.SeededSlamsAndRfV2)
+                {
+                    Settings.Combat.Profiles.TryAdd(DefaultRuleProfiles.SlamsName, DefaultRuleProfiles.BuildSlams());
+                    Settings.Combat.Profiles[DefaultRuleProfiles.RFName] = DefaultRuleProfiles.BuildRF();
+                    Settings.Combat.SeededSlamsAndRfV2 = true;
+                }
+
                 // One routine instance for the whole plugin lifetime now - "which build to play"
                 // is just which named CombatRuleProfile is active (read fresh every tick by
                 // RuleBasedRoutine), not a whole different hardcoded routine class to swap in.

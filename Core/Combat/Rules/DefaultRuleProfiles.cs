@@ -23,6 +23,7 @@ public static class DefaultRuleProfiles
             BuildRetaliation(),
             BuildRF(),
             BuildSunder(),
+            BuildSlams(),
             BuildStaticStrikeHelix(),
         };
 
@@ -157,20 +158,43 @@ public static class DefaultRuleProfiles
         },
     };
 
-    // "FireTrap" (correct casing, matching the real skill name) - the original checked
-    // "Firetrap" (lowercase t) in its live branch, a typo that made the rule permanently dead
-    // despite FireTrap being configured and off-cooldown-checked correctly elsewhere.
-    private static CombatRuleProfile BuildRF() => new()
+    public const string RFName = "RF";
+    public const string SlamsName = "Slams";
+
+    // Radius (world units) around the target that "pack" counts look at.
+    private const string PackRadius = "60";
+
+    // Slams: keep a Decoy Totem up on anything worth it, refresh the cry when its empowered hits run
+    // out, then slam. Blood Rage sits below Sunder as asked, so it only gets a turn while Sunder is
+    // on cooldown. Skill names must match what the skill bar reports (turn on "Log Why Not Attacking"
+    // to see the discovered names); "BloodRage" is a guess.
+    public static CombatRuleProfile BuildSlams() => new()
     {
-        Name = "RF",
+        Name = SlamsName,
         Rules = new List<CombatRule>
         {
-            Rule("Punishment", "(Target.Rarity == MonsterRarity.Rare || Target.Rarity == MonsterRarity.Unique) && !Target.HasBuff(\"punishment\")"),
-            Rule("RighteousFire", "!Player.HasBuff(\"righteous_fire\")"),
-            Rule("HolyFlameTotem", "(Target.Rarity == MonsterRarity.Rare || Target.Rarity == MonsterRarity.Unique) && !HasNearbyEntityWithMetadata(\"Metadata/Monsters/Totems/HolyFireSprayTotem\", 30)"),
-            Rule("DecoyTotem", "(Target.Rarity == MonsterRarity.Rare || Target.Rarity == MonsterRarity.Unique) && !HasNearbyEntityWithMetadata(\"Metadata/Monsters/Totems/TauntTotem\", 30)"),
-            Rule("FireTrap"),
-            Rule("Firestorm"),
+            Rule("DecoyTotem", $"PackWorthy({PackRadius}) && !HasNearbyEntityWithMetadata(\"Metadata/Monsters/Totems/TauntTotem\", 30)"),
+            Rule("IntimidatingCry", "Player.ExertedAttacksRemaining(\"IntimidatingCry\") == 0"),
+            Rule("Sunder"),
+            Rule("BloodRage", $"!Player.HasBuff(\"blood_rage\") && PackCountNot({PackRadius}, MonsterRarity.Unique) >= 1"),
+            Rule("GroundSlam"),
+        },
+    };
+
+    // RF: Righteous Fire itself is not cast here (it is a toggle you keep up); this profile curses,
+    // drops totems/traps/rays on worthwhile packs, and MeleeRange keeps the character in the monsters'
+    // faces so the fire hits them. "ScorchingRayAltX" is a guess at the internal name of Scorching Ray
+    // of Immolation, and the Elemental Weakness buff id is "curse_elemental_weakness".
+    public static CombatRuleProfile BuildRF() => new()
+    {
+        Name = RFName,
+        MeleeRange = 25,
+        Rules = new List<CombatRule>
+        {
+            Rule("ElementalWeakness", "(Target.Rarity == MonsterRarity.Rare || Target.Rarity == MonsterRarity.Unique) && !Target.HasBuff(\"curse_elemental_weakness\")"),
+            Rule("HolyFlameTotem", $"PackWorthy({PackRadius}) && !HasNearbyEntityWithMetadata(\"Metadata/Monsters/Totems/HolyFireSprayTotem\", 30)"),
+            Rule("ScorchingRayAltX", $"PackWorthy({PackRadius})"),
+            Rule("FireTrap", $"PackWorthy({PackRadius})"),
         },
     };
 

@@ -294,6 +294,7 @@ public class CombatSettings
     // Profiles added to the defaults after first run are seeded once into existing installs; this
     // remembers that so deleting one doesn't bring it back on the next load.
     public bool SeededStaticStrikeHelix;
+    public bool SeededSlamsAndRfV2;
 }
 
 [Submenu(CollapsedByDefault = true)]

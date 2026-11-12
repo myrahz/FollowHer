@@ -102,6 +102,10 @@ namespace FollowHer.Core.Combat
 
                 if (_inCombat) EndCombat();
                 StateCoordinator.SetState(RoutineState.Orbwalking);
+
+                // A melee profile closes in on the monster instead of walking back to the leader.
+                if (_combatAllowed && TryApproachTarget()) return;
+
                 Orbwalk();
             }
             catch (Exception ex)
@@ -114,6 +118,10 @@ namespace FollowHer.Core.Combat
 
         protected abstract (ActiveSkill skill, EntityInfo target) GetBestAction();
         protected abstract void ExecuteCombatTick(ActiveSkill skill, EntityInfo target);
+
+        /// <summary>Called when combat is allowed but no skill fired this tick. Return true to claim
+        /// the tick (e.g. by walking toward a monster) instead of following the leader.</summary>
+        protected virtual bool TryApproachTarget() => false;
 
         protected void BeginCombat()
         {
