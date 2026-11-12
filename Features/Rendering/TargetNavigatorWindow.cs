@@ -8,7 +8,6 @@ using ExileCore.Shared.Nodes;
 using FollowHer.Features.Following.Pathfinding;
 using FollowHer.Features.Navigation;
 using FollowHer.Settings;
-using ImGuiNET;
 
 namespace FollowHer.Features.Rendering;
 

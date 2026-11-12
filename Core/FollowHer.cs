@@ -17,7 +17,6 @@ using FollowHer.Features.Following;
 using FollowHer.Features.Navigation;
 using FollowHer.Features.Rendering;
 using FollowHer.Settings;
-using ImGuiNET;
 
 namespace FollowHer
 {
@@ -130,6 +129,13 @@ namespace FollowHer
                 if (Settings.Combat.Profiles.Count == 0)
                 {
                     Settings.Combat.Profiles = DefaultRuleProfiles.CreateDefaults();
+                    Settings.Combat.SeededStaticStrikeHelix = true;
+                }
+                else if (!Settings.Combat.SeededStaticStrikeHelix)
+                {
+                    Settings.Combat.Profiles.TryAdd(DefaultRuleProfiles.StaticStrikeHelixName,
+                        DefaultRuleProfiles.BuildStaticStrikeHelix());
+                    Settings.Combat.SeededStaticStrikeHelix = true;
                 }
 
                 // One routine instance for the whole plugin lifetime now - "which build to play"

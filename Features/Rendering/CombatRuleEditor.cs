@@ -8,7 +8,6 @@ using ExileCore.Shared.Helpers;
 using FollowHer.Core.Combat;
 using FollowHer.Core.Combat.Rules;
 using FollowHer.Settings;
-using ImGuiNET;
 using Newtonsoft.Json;
 
 namespace FollowHer.Features.Rendering;

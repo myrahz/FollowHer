@@ -284,6 +284,12 @@ namespace FollowHer.Core.Combat.Skills
                         if (skill == null || skill.Address == 0)
                             continue;
 
+                        // The same skill can sit in more than one slot (it did for StaticStrike,
+                        // IntimidatingCry and Move). The dictionaries are keyed by name, so the later
+                        // slot would overwrite the first with a different key - keep the first.
+                        if (_skills.ContainsKey(skill.Name) || _movementSkills.ContainsKey(skill.Name))
+                            continue;
+
                         // Bar slot i is shortcut Skill{i+1}. Checked against the live game: ShieldCharge
                         // sits in slots 1 and 6, and these read T and R - which is where it is bound.
                         // Shifting the index one further (slot 1 -> Skill3) lands on the right mouse

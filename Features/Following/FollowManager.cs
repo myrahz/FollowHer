@@ -909,6 +909,18 @@ public class FollowManager
     private readonly Dictionary<uint, int> _doorClicks = new();
     private DateTime _nextDoorScanAt = DateTime.MinValue;
     private const int MaxDoorClicks = 8;
+
+    // Clicking an object needs the cursor to rest on it first: the game only interacts with what it
+    // currently has highlighted, so a click sent in the same instant as the cursor move lands on the
+    // ground and just walks the character there. The cursor is put on the door, the click waits for
+    // the door to read as targeted, and if it never does (the aim point is off the model) the aim
+    // height is changed and the wait starts over.
+    private uint _doorHoverId;
+    private DateTime _doorHoverSince = DateTime.MinValue;
+    private int _doorAimAttempt;
+    private DateTime _doorSettleUntil = DateTime.MinValue;
+    private const int DoorHoverWaitMs = 350;
+    private static readonly float[] DoorAimHeights = { 40f, 110f, 0f, 180f };
     private const int DoorScanIntervalMs = 150;
     private const float DoorBlockedSpotRadiusWorld = 220f;
     private const float DoorRouteSlackWorld = 110f;
@@ -928,7 +940,15 @@ public class FollowManager
     internal bool TryOpenDoorOnRoute(IReadOnlyList<Vector3> upcoming, Vector3? blockedAt = null, float anyDoorWithin = 0f)
     {
         var settings = FollowHer.Instance.Settings.Movement;
-        if (!settings.OpenDoors || DateTime.Now < _nextDoorScanAt) return false;
+        if (!settings.OpenDoors) return false;
+
+        // Just clicked: stand still while the door opens, rather than walking off the cursor.
+        if (DateTime.Now < _doorSettleUntil) return true;
+
+        // While the cursor is resting on a door waiting for it to highlight, every tick counts - the
+        // scan throttle would let the character walk away mid-hover.
+        var hovering = _doorHoverId != 0 && (DateTime.Now - _doorHoverSince).TotalMilliseconds < DoorHoverWaitMs * 2;
+        if (!hovering && DateTime.Now < _nextDoorScanAt) return false;
         _nextDoorScanAt = DateTime.Now.AddMilliseconds(DoorScanIntervalMs);
 
         var player = _gameController.Player;
@@ -968,18 +988,41 @@ public class FollowManager
         // Walk up to it first; the click is only made once it is in reach.
         if (bestDistance > settings.DoorOpenDistance.Value && anyDoorWithin <= 0f) return false;
 
-        var clicks = _doorClicks.GetValueOrDefault(best.Id) + 1;
-        _doorClicks[best.Id] = clicks;
-
-        // The door has to be clicked standing still: the click lands where the door is on screen now.
+        // The door has to be clicked standing still, with the cursor resting on it.
         StopMovement();
-        using (ExileCore.Input.InputManager.BlockUserMouseInput())
+
+        var height = DoorAimHeights[_doorAimAttempt % DoorAimHeights.Length];
+        var aim = best.PosNum + new Vector3(0, 0, height);
+        var screen = _gameController.IngameState.Camera.WorldToScreen(aim);
+        if (screen == Vector2.Zero) return false;
+
+        if (_doorHoverId != best.Id)
         {
-            ClickWorldPosition(best.PosNum);
+            _doorHoverId = best.Id;
+            _doorHoverSince = DateTime.Now;
         }
 
-        _nextDoorScanAt = DateTime.Now.AddMilliseconds(600);
-        LogDebug($"Opening door '{best.Path}' {bestDistance:F0}u away (click {clicks}/{MaxDoorClicks})");
+        var targeted = best.TryGetComponent<Targetable>(out var targetable) && targetable.isTargeted;
+        var waited = (DateTime.Now - _doorHoverSince).TotalMilliseconds;
+
+        using (ExileCore.Input.InputManager.BlockUserMouseInput())
+        {
+            ExileCore.Input.SetCursorPos(screen);
+
+            if (!targeted && waited < DoorHoverWaitMs) return true;
+
+            ExileCore.Input.Click(MouseButtons.Left);
+        }
+
+        var clicks = _doorClicks.GetValueOrDefault(best.Id) + 1;
+        _doorClicks[best.Id] = clicks;
+        LogDebug($"Opening door '{best.Path}' {bestDistance:F0}u away (click {clicks}/{MaxDoorClicks}, " +
+                 $"{(targeted ? "highlighted" : $"not highlighted after {waited:F0} ms")}, aim height {height:F0})");
+
+        // Not highlighted: the aim point was probably off the door model, so try another height next time.
+        if (!targeted) _doorAimAttempt++;
+        _doorHoverSince = DateTime.Now;
+        _doorSettleUntil = DateTime.Now.AddMilliseconds(targeted ? 700 : 250);
         return true;
     }
 
@@ -1607,6 +1650,9 @@ public class FollowManager
         // nothing here (its grid coordinates would point at an unrelated spot).
         Navigation.ResetForArea();
         _doorClicks.Clear();
+        _doorHoverId = 0;
+        _doorAimAttempt = 0;
+        _doorSettleUntil = DateTime.MinValue;
         ClearState();
     }
 

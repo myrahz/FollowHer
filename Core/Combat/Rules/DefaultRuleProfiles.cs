@@ -23,6 +23,7 @@ public static class DefaultRuleProfiles
             BuildRetaliation(),
             BuildRF(),
             BuildSunder(),
+            BuildStaticStrikeHelix(),
         };
 
         var result = new Dictionary<string, CombatRuleProfile>();
@@ -38,6 +39,29 @@ public static class DefaultRuleProfiles
     {
         SkillName = skillName,
         Condition = condition,
+    };
+
+    public const string StaticStrikeHelixName = "StaticStrikeHelix";
+
+    // Static Strike + Intimidating Cry + Spectral Helix, driven by the RuthlessTracker plugin's
+    // counter (0,1 build-up; 2 = the next Static Strike is the big hit). Priority order:
+    //  1. counter at 2 and the cry is ready -> cry, so the big hit is empowered
+    //  2. empowered attacks left from the cry -> Static Strike spends them
+    //  3. Static Strike buff up while the cry recovers -> Spectral Helix
+    //  4. otherwise build the counter up with Static Strike, but not right after an empowered
+    //     attack and not while its buff is still running
+    // "static_strike_buff" is the buff id from the game's BuffDefinitions; if the buff doesn't
+    // seem to register in game, check the real name in the HUD's buff list and edit rules 3 and 4.
+    public static CombatRuleProfile BuildStaticStrikeHelix() => new()
+    {
+        Name = StaticStrikeHelixName,
+        Rules = new List<CombatRule>
+        {
+            Rule("IntimidatingCry", "RuthlessStage(\"StaticStrike\") == 2 && Player.ExertedAttacksRemaining(\"IntimidatingCry\") == 0"),
+            Rule("StaticStrike", "Player.ExertedAttacksRemaining(\"IntimidatingCry\") >= 1"),
+            Rule("SpectralHelix", "Player.HasBuff(\"static_strike_buff\") && SkillOnCooldown(\"IntimidatingCry\")"),
+            Rule("StaticStrike", "RuthlessStage(\"StaticStrike\") >= 0 && RuthlessStage(\"StaticStrike\") < 2 && !Player.HasBuff(\"static_strike_buff\") && !Player.EmpoweredAttackWithin(2)"),
+        },
     };
 
     private static CombatRuleProfile BuildAbsolution() => new()

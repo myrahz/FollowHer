@@ -290,6 +290,10 @@ public class CombatSettings
     // FollowHer.DrawSettings(), the same technique ReAgent uses for its own rule data.
     public Dictionary<string, CombatRuleProfile> Profiles = new();
     public string ActiveProfile = "";
+
+    // Profiles added to the defaults after first run are seeded once into existing installs; this
+    // remembers that so deleting one doesn't bring it back on the next load.
+    public bool SeededStaticStrikeHelix;
 }
 
 [Submenu(CollapsedByDefault = true)]

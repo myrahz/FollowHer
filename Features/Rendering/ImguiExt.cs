@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
-using ImGuiNET;
 
 namespace FollowHer.Features.Rendering;
 
@@ -40,13 +39,13 @@ public static class ImguiExt
 
     public static unsafe bool SetDragDropPayload<T>(string id, T payload) where T : unmanaged
     {
-        return ImGui.SetDragDropPayload(id, (IntPtr)(&payload), (uint)sizeof(T));
+        return ImGui.SetDragDropPayload(id, &payload, (uint)sizeof(T));
     }
 
     public static unsafe T? AcceptDragDropPayload<T>(string id) where T : unmanaged
     {
         var ptr = ImGui.AcceptDragDropPayload(id);
-        if (ptr.NativePtr != null)
+        if (!ptr.IsNull)
         {
             var data = *(T*)ptr.Data;
             return data;

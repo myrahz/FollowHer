@@ -52,6 +52,35 @@ public class SkillRuleContext
             e.Distance(_targetEntity) <= radius);
     }
 
+    // Ruthless support counter for a skill, read from the RuthlessTracker plugin over the plugin
+    // bridge: 0..max-1, where max-1 means the next swing is the big hit. -1 when RuthlessTracker
+    // isn't loaded, the skill has no Ruthless, or the tracker isn't synced yet - so a check like
+    // "RuthlessStage(...) == 2" is simply false rather than wrong in those cases.
+    private static Func<string, int> _ruthlessStage;
+
+    public int RuthlessStage(string skillName)
+    {
+        try
+        {
+            _ruthlessStage ??= _gameController?.PluginBridge?.GetMethod<Func<string, int>>("RuthlessTracker.GetStage");
+            return _ruthlessStage?.Invoke(skillName) ?? -1;
+        }
+        catch
+        {
+            _ruthlessStage = null;
+            return -1;
+        }
+    }
+
+    // True while the named skill is on cooldown (e.g. a cry that was just used). An unknown skill
+    // counts as not on cooldown.
+    public bool SkillOnCooldown(string skillName)
+    {
+        var skill = _gameController?.Player?.GetComponent<Actor>()?.ActorSkills?
+            .FirstOrDefault(s => s.Name == skillName);
+        return skill?.IsOnCooldown ?? false;
+    }
+
     // HealthPercent/EnergyShieldPercent are 0-1 fractions, matching the underlying Life component
     // and every existing hardcoded routine's own convention (e.g. "HPPercentage <= 0.85").
     public class EntityRuleInfo
@@ -84,6 +113,9 @@ public class SkillRuleContext
         // Warcry-style skills track their remaining empowered/exerted attack count in a buff
         // named "display_num_empowered_attacks" whose SourceSkill identifies which cry it came
         // from - ported from the old Sunder routine's GetRemainingExertedAttacks helper.
+        // True if an empowered attack was spent in the last N seconds (see EmpoweredAttackTracker).
+        public bool EmpoweredAttackWithin(float seconds) => EmpoweredAttackTracker.SpentWithin(seconds);
+
         public int ExertedAttacksRemaining(string sourceSkillName)
         {
             if (_entity == null || !_entity.TryGetComponent<Buffs>(out var buffs)) return 0;

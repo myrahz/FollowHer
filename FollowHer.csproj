@@ -12,8 +12,7 @@
     <!--Don't bother setting anything to do with the output path, HUD will do it for you if you put the source code inside Plugins/Source-->
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="ImGui.NET" Version="1.90.0.1" />
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <PackageReference Include="SharpDX.Mathematics" Version="4.2.0" />
     <PackageReference Include="System.Linq.Dynamic.Core" Version="1.3.7" />
   </ItemGroup>
@@ -24,11 +23,18 @@
     <Reference Include="GameOffsets">
       <HintPath>..\..\..\GameOffsets.dll</HintPath>
     </Reference>
+    <Reference Include="Hexa.NET.ImGui">
+      <HintPath>$(exapiPackage)\Hexa.NET.ImGui.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
   </ItemGroup>
   <ItemGroup>
     <!-- Tools/ holds standalone developer tools with their own projects; none of it belongs in the plugin build. -->
     <Compile Remove="Tools\**" />
     <EmbeddedResource Remove="Tools\**" />
     <None Remove="Tools\**" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="Hexa.NET.ImGui" />
   </ItemGroup>
 </Project>

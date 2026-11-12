@@ -59,6 +59,7 @@ public class RuleBasedRoutine : OrbWalkingRoutineBase
         try
         {
             _targetSelector.Update(SkillHandler.GetAllSkills());
+            EmpoweredAttackTracker.Update(GameController);
 
             var profile = GetActiveProfile();
             if (profile == null)
