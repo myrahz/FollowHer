@@ -35,6 +35,7 @@ namespace FollowHer
         private DateTime _leaderInviteFirstSeenAt = DateTime.MinValue;
         private DateTime _nextGemLevelClickAt = DateTime.MinValue;
         private DateTime _lastLeaderAttackDetectedAt = DateTime.MinValue;
+        private string _lastCombatGateState;
 
         /// <summary>Manual "walk to this Radar target" navigation, owned by FollowManager and
         /// published here so the navigator window (drawn from Render) can reach it.</summary>
@@ -310,7 +311,24 @@ namespace FollowHer
                         }
                     }
 
-                    combatActive = forceAttack || (fightingEnabled && attackGateOpen);
+                    // With a leader option on, the gate is authoritative in Follow mode: the Precision
+                    // key/toggle no longer overrides it, so the follower never attacks while the leader
+                    // isn't (attacking / idle near monsters). With both leader options off the gate is
+                    // always open anyway, and Precision still forces attacking as before.
+                    var leaderGateEnforced = Settings.Combat.AttackWhenLeaderIsAttacking ||
+                                             Settings.Combat.AttackWhenLeaderIdleNearMonsters;
+                    combatActive = (forceAttack && !leaderGateEnforced) || (fightingEnabled && attackGateOpen);
+
+                    if (Settings.Movement.Debug.ShowDetailedDebug)
+                    {
+                        var state = $"fightingToggle={fightingEnabled}, gateOpen={attackGateOpen}, " +
+                                    $"force={forceAttack} (ignored={forceAttack && leaderGateEnforced}), attack={combatActive}";
+                        if (state != _lastCombatGateState)
+                        {
+                            _lastCombatGateState = state;
+                            DebugWindow.LogMsg($"[{Name}] Combat gate: {state}");
+                        }
+                    }
 
                     // Movement follows a single runtime state: the hotkey flips _movementToggled, which
                     // is seeded from (and kept in sync with) Movement > Enable. It must NOT be OR'd with
