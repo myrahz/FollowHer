@@ -36,6 +36,7 @@ namespace FollowHer
         private DateTime _nextGemLevelClickAt = DateTime.MinValue;
         private DateTime _lastLeaderAttackDetectedAt = DateTime.MinValue;
         private string _lastCombatGateState;
+        private string _lastLeaderAttackReason;
 
         /// <summary>Manual "walk to this Radar target" navigation, owned by FollowManager and
         /// published here so the navigator window (drawn from Render) can reach it.</summary>
@@ -297,6 +298,17 @@ namespace FollowHer
                                 if (leaderIsAttackingNow)
                                 {
                                     _lastLeaderAttackDetectedAt = DateTime.Now;
+
+                                    if (Settings.Movement.Debug.ShowDetailedDebug)
+                                    {
+                                        var why = LeaderAttackDetector.DescribeCounting(
+                                            actorComponent, Settings.Combat.LeaderSkillBlacklistEntries);
+                                        if (why != _lastLeaderAttackReason)
+                                        {
+                                            _lastLeaderAttackReason = why;
+                                            DebugWindow.LogMsg($"[{Name}] Leader counted as attacking: {why}");
+                                        }
+                                    }
                                 }
 
                                 // Keep attacking for a short grace period after the leader was last seen

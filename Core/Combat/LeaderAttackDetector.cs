@@ -44,12 +44,39 @@ namespace FollowHer.Core.Combat
             return otherInUse || (leaderActor.isAttacking && !blacklistedInUse);
         }
 
+        // Plain movement is never an attack, whatever the user's blacklist says - the leader's own
+        // "Move" skill is in use whenever they walk, and it isn't (and shouldn't need to be) listed.
+        private static readonly HashSet<string> AlwaysIgnored = new()
+        {
+            "move", "dash", "flamedash", "frostblink", "lightningwarp", "shieldcharge",
+            "newshieldcharge", "leapslam", "whirlingblades", "blinkarrow", "chargeddash",
+            "mirrorarrow", "witheringstep", "phaserun", "portal",
+        };
+
         private static bool IsBlacklisted(ActorSkill skill, HashSet<string> normalizedBlacklist)
         {
+            var internalName = Normalize(skill.InternalName);
+            var name = Normalize(skill.Name);
+            if (AlwaysIgnored.Contains(internalName) || AlwaysIgnored.Contains(name)) return true;
+
             if (normalizedBlacklist.Count == 0) return false;
 
-            return normalizedBlacklist.Contains(Normalize(skill.InternalName)) ||
-                   normalizedBlacklist.Contains(Normalize(skill.Name));
+            return normalizedBlacklist.Contains(internalName) || normalizedBlacklist.Contains(name);
+        }
+
+        /// <summary>The leader's in-use skills that count as attacking, for the debug log - shows
+        /// which skill opened the gate when it opens unexpectedly.</summary>
+        public static string DescribeCounting(Actor leaderActor, IReadOnlyList<LeaderSkillBlacklistEntry> blacklist)
+        {
+            if (leaderActor == null) return "no actor";
+
+            var set = BuildNormalizedSet(blacklist);
+            var counting = leaderActor.ActorSkills?
+                .Where(s => s != null && s.IsUsingOrCharging && !IsBlacklisted(s, set))
+                .Select(s => $"{s.Name}/{s.InternalName}")
+                .ToList() ?? new List<string>();
+
+            return $"skills=[{string.Join(", ", counting)}], isAttacking={leaderActor.isAttacking}, isMoving={leaderActor.isMoving}";
         }
 
         // Only enabled entries are honored, so a skill can be parked in the list (unchecked)
